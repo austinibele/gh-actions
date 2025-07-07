@@ -1,0 +1,81 @@
+# .github/apply/action.yml
+
+name: "Terraform setup and apply"
+description: "Applies a terraform plan file from S3"
+inputs:
+  terraform_directory: 
+    description: 'Directory that holds Terraform code'
+    required: true
+  terraform_version: 
+    description: 'Terraform Version'
+    required: true
+  PAT: 
+    description: 'GitHub token for authentication'
+    required: true
+  pr_id:
+    description: 'Pull request ID'
+    required: true
+  s3_bucket_name:
+    description: 'S3 bucket ARN'
+    required: true
+  aws_access_key_id:
+    description: 'AWS Access Key ID'
+    required: true
+  aws_secret_access_key:
+    description: 'AWS Secret Access Key'
+    required: true
+  aws_region:
+    description: 'AWS Region'
+    required: true
+  tf_api_token:
+    description: 'Terraform API Token'
+    required: true
+  tf_var_env:
+    description: 'Environment to apply for'
+    required: true
+  tf_var_vault_token:
+    description: 'Vault Token'
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ inputs.terraform_version }}
+        cli_config_credentials_token: ${{ inputs.tf_api_token }}
+        terraform_wrapper: false
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ inputs.aws_access_key_id }}
+        aws-secret-access-key: ${{ inputs.aws_secret_access_key }}
+        aws-region: ${{ inputs.aws_region }}
+
+    - name: Terraform Init
+      working-directory: ${{ inputs.terraform_directory }}
+      shell: bash
+      run: terraform init --backend-config="env/backend_s3_${{ inputs.tf_var_env }}.hcl"
+
+    - name: Download Plan from S3
+      shell: bash
+      env:
+        TF_VAR_env: ${{ inputs.tf_var_env }}
+      run: |
+        aws s3 cp s3://${{ inputs.s3_bucket_name }}/${{ inputs.pr_id }}-${{ inputs.tf_var_env }}-tfplan ${{ inputs.terraform_directory }}/tfplan
+
+    - name: Terraform Apply
+      id: apply
+      working-directory: ${{ inputs.terraform_directory }}
+      shell: bash
+      env:
+        TF_VAR_env: ${{ inputs.tf_var_env }}
+        TF_VAR_aws_access_key_id: ${{ inputs.aws_access_key_id }}
+        TF_VAR_aws_secret_access_key: ${{ inputs.aws_secret_access_key }}
+        TF_VAR_aws_region: ${{ inputs.aws_region }}
+        TF_VAR_vault_token: ${{ inputs.tf_var_vault_token }}
+      run: |
+        set -e
+        terraform apply -input=false tfplan

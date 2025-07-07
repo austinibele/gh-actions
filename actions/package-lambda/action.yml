@@ -1,0 +1,209 @@
+name: 'Package Lambda'
+description: 'Packages a Lambda function and uploads it to S3'
+inputs:
+  s3_bucket_name:
+    description: 'S3 bucket name'
+    required: true
+  key_prefix:
+    description: 'Prefix for the S3 key (e.g., "slack-error-notifier")'
+    required: true
+  python_version:
+    description: 'Python version to use when installing dependencies (e.g., "3.12")'
+    required: false
+    default: '3.12'
+  build_directory:
+    description: 'Directory containing the Lambda function code'
+    required: true
+  build_env:
+    description: 'JSON array of environment variables to use during build, format: [{"name": "VAR_NAME", "value": "value"}]'
+    required: false
+    default: '[]'
+  filter_pattern:
+    description: 'JSON array of patterns to check for changed files'
+    required: true
+  aws_access_key_id:
+    description: 'AWS Access Key ID'
+    required: true
+  aws_secret_access_key:
+    description: 'AWS Secret Access Key'
+    required: true
+  github_token:
+    description: 'GitHub token with permissions to read workflow runs'
+    required: true
+  pat:
+    description: 'Personal Access Token for Git operations'
+    required: true
+  username:
+    description: 'Git username for Git operations'
+    required: true
+  email:
+    description: 'Git email for Git operations'
+    required: true
+
+outputs:
+  s3_key:
+    description: "The S3 object key of the uploaded Lambda package"
+    value: ${{ steps.package-or-use.outputs.s3_key }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Configure Git # Required because we are using submodules
+      shell: bash
+      run: |
+        git config --global user.email "${{ inputs.email }}"
+        git config --global user.name "${{ inputs.username }}"
+        git config --global url.https://${{ inputs.pat }}@github.com/.insteadOf https://github.com/
+
+    - name: Checkout submodules
+      shell: bash
+      run: git submodule update --init --recursive
+
+    - name: Filter Changed Files
+      uses: dorny/paths-filter@v3
+      id: filter
+      with:
+        base: ${{ github.ref }}
+        ref: ${{ github.ref }}
+        filters: |
+          source_changes:
+            ${{ inputs.filter_pattern }}
+
+    - name: Check Previous Run Status
+      id: check-status
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        set +e  # Don't exit on error
+        # First get the previous workflow run
+        PREVIOUS_RUN_ID=$(gh api \
+          repos/${{ github.repository }}/actions/runs \
+          --jq ".workflow_runs[] | select(.head_branch == \"${{ github.ref_name }}\" and .id != ${{ github.run_id }}) | .id" \
+          | head -n 1 || echo "")
+        if [ -z "$PREVIOUS_RUN_ID" ]; then
+          echo "No previous workflow run found or API call failed"
+          echo "previous_failed=false" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        # Now get the jobs for that specific run
+        PREVIOUS_STATUS=$(gh api \
+          repos/${{ github.repository }}/actions/runs/$PREVIOUS_RUN_ID/jobs \
+          --jq ".jobs[] | select(.name | contains(\"package-${{ inputs.key_prefix }}\")) | .conclusion" \
+          | head -n 1 || echo "")
+        if [ "$PREVIOUS_STATUS" = "failure" ]; then
+          echo "Previous build failed"
+          echo "previous_failed=true" >> $GITHUB_OUTPUT
+        else
+          echo "Previous build succeeded or status check failed"
+          echo "previous_failed=false" >> $GITHUB_OUTPUT
+        fi
+        exit 0  # Ensure we don't fail the build
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ inputs.aws_access_key_id }}
+        aws-secret-access-key: ${{ inputs.aws_secret_access_key }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Check for Existing Package
+      id: check-package
+      shell: bash
+      run: |
+        # Include environment in the S3 key prefix
+        if [[ "${{ github.ref_name }}" == "main" ]]; then
+          ENV_TAG="prod"
+        else
+          ENV_TAG="dev"
+        fi
+        
+        S3_PREFIX="${{ inputs.key_prefix }}-${ENV_TAG}"
+        
+        # List objects in S3 with the given prefix
+        LATEST_PACKAGE=$(aws s3api list-objects-v2 \
+          --bucket ${{ inputs.s3_bucket_name }} \
+          --prefix "$S3_PREFIX" \
+          --query "sort_by(Contents, &LastModified)[-1].Key" \
+          --output text || echo "")
+          
+        if [ "$LATEST_PACKAGE" != "None" ] && [ -n "$LATEST_PACKAGE" ]; then
+          echo "has_existing_package=true" >> $GITHUB_OUTPUT
+          echo "latest_package_key=$LATEST_PACKAGE" >> $GITHUB_OUTPUT
+        else
+          echo "has_existing_package=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      if: |
+        steps.filter.outputs.source_changes == 'true' || 
+        steps.check-package.outputs.has_existing_package == 'false' || 
+        steps.check-status.outputs.previous_failed == 'true'
+      with:
+        python-version: ${{ inputs.python_version }}
+
+    - name: Package or Use Existing Lambda
+      id: package-or-use
+      shell: bash
+      run: |
+        if [[ "${{ github.ref_name }}" == "main" ]]; then
+          ENV_TAG="prod"
+        else
+          ENV_TAG="dev"
+        fi
+        
+        S3_KEY="${{ inputs.key_prefix }}-${ENV_TAG}-${{ github.sha }}.zip"
+        S3_URI="s3://${{ inputs.s3_bucket_name }}/$S3_KEY"
+        
+        if [[ "${{ steps.filter.outputs.source_changes }}" == "true" ]] || \
+           [[ "${{ steps.check-package.outputs.has_existing_package }}" == "false" ]] || \
+           [[ "${{ steps.check-status.outputs.previous_failed }}" == "true" ]]; then
+          echo "Building new Lambda package..."
+          
+          # Create a temporary directory for packaging
+          TEMP_DIR=$(mktemp -d)
+          
+          # Parse build environment variables and create environment for the build
+          if [ -n "${{ inputs.build_env }}" ]; then
+            while IFS= read -r item; do
+              name=$(echo "$item" | jq -r '.name')
+              value=$(echo "$item" | jq -r '.value')
+              export "$name"="$value"
+            done < <(echo '${{ inputs.build_env }}' | jq -c '.[]')
+          fi
+          
+          # Copy Lambda code to the temp directory
+          cp -r ${{ inputs.build_directory }}/* $TEMP_DIR/
+          
+          # Navigate to the build directory
+          cd $TEMP_DIR
+          
+          # Create ZIP package (Add any build steps needed here)
+          if [ -f "package.json" ]; then
+            # For Node.js projects
+            npm install --production
+          elif [ -f "requirements.txt" ]; then
+            # For Python projects
+            echo "Installing Python dependencies with Python ${{ inputs.python_version }}..."
+            python -m pip install --upgrade pip
+            python -m pip install -r requirements.txt -t .
+          fi
+          
+          # Create the ZIP file
+          zip -r lambda_package.zip ./* -x "*.git*" "*__pycache__*" "*.pytest_cache*" "*.venv*"
+          
+          # Upload to S3
+          aws s3 cp lambda_package.zip $S3_URI
+          
+          # Clean up
+          rm -rf $TEMP_DIR
+          
+          echo "s3_key=$S3_KEY" >> $GITHUB_OUTPUT
+        else
+          echo "Using existing Lambda package..."
+          echo "s3_key=${{ steps.check-package.outputs.latest_package_key }}" >> $GITHUB_OUTPUT
+        fi 
