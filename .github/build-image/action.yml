@@ -35,26 +35,6 @@ inputs:
   email:
     description: 'Git email for Git operations'
     required: true
-  setup_cache:
-    description: 'Whether to setup S3 cache for npm/pnpm'
-    required: false
-    default: 'false'
-  use_s3_cache:
-    description: 'Whether to use S3 for caching (only applies when setup_cache is true)'
-    required: false
-    default: 'false'
-  cache_bucket:
-    description: 'S3 bucket name for caching (required if setup_cache is true)'
-    required: false
-    default: ''
-  cache_type:
-    description: 'Cache type: "pnpm" or "npm" (default: pnpm)'
-    required: false
-    default: 'pnpm'
-  cache_key_files:
-    description: 'Files to use for cache key (e.g., "pnpm-lock.yaml" or "package-lock.json")'
-    required: false
-    default: 'pnpm-lock.yaml'
   filter_pattern:
     description: 'JSON array of glob patterns to filter changed files (e.g., ["frontend/**", "common/**"])'
     required: false
@@ -267,33 +247,6 @@ runs:
         
         echo "should_build=$SHOULD_BUILD" >> $GITHUB_OUTPUT
         echo "existing_image_uri=$EXISTING_IMAGE_URI" >> $GITHUB_OUTPUT
-
-    - name: Setup S3 Cache
-      if: inputs.setup_cache == 'true' && inputs.use_s3_cache == 'true' && steps.change-detection.outputs.should_build == 'true'
-      uses: tespkg/actions-cache@v1
-      id: cache
-      with:
-        bucket: ${{ inputs.cache_bucket }}
-        accessKey: ${{ inputs.aws_access_key_id }}
-        secretKey: ${{ inputs.aws_secret_access_key }}
-        use-fallback: true
-        path: |
-          ${{ inputs.cache_type }}
-        key: ${{ inputs.cache_type }}-cache-${{ steps.env-setup.outputs.cache_scope }}-${{ hashFiles(inputs.cache_key_files) }}
-        restore-keys: |
-          ${{ inputs.cache_type }}-cache-${{ steps.env-setup.outputs.cache_scope }}-
-          ${{ inputs.cache_type }}-cache-
-
-    - name: Inject Cache into Docker
-      if: inputs.setup_cache == 'true' && inputs.use_s3_cache == 'true' && steps.change-detection.outputs.should_build == 'true'
-      id: inject-cache
-      uses: reproducible-containers/buildkit-cache-dance@v3.1.0
-      with:
-        cache-map: |
-          {
-            "${{ inputs.cache_type }}": "/${{ inputs.cache_type }}"
-          }
-        skip-extraction: ${{ steps.cache.outputs.cache-hit }}
 
     - name: Build and Push Docker Image
       if: steps.change-detection.outputs.should_build == 'true'
