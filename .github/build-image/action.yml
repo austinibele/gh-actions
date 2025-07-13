@@ -55,17 +55,7 @@ runs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-      with:
-        driver-opts: |
-          image=moby/buildkit:v0.23.2
-
-    - name: Set up Docker Metadata
-      uses: docker/metadata-action@v5
-      id: meta
-      with:
-        images: ${{ inputs.image_name }}
+    # Removed Buildx and Metadata steps as caching and image type labels are no longer required
 
     - name: Configure Git for Submodules
       shell: bash
@@ -104,175 +94,31 @@ runs:
           echo "cache_scope=${{ inputs.image_name }}-${{ github.ref_name }}" >> $GITHUB_OUTPUT
         fi
 
-    - name: Check for Changes and Existing Images
-      id: change-detection
-      shell: bash
-      env:
-        FILTER_PATTERN: ${{ inputs.filter_pattern }}
-        GH_TOKEN: ${{ inputs.pat }}
-      run: |
-        # Set default values
-        SHOULD_BUILD="true"
-        EXISTING_IMAGE_URI=""
-        
-        # Only run change detection if filter_pattern is provided
-        if [[ -n "$FILTER_PATTERN" ]]; then
-          echo "Filter pattern provided, checking for changes..."
-          
-          # Function: Filter Changed Files (from change_detection.sh)
-          filter_changed_files() {
-              echo "Filtering changed files..."
-              
-              # Determine the previous commit SHA to diff against
-              PREV_COMMIT="${GITHUB_EVENT_BEFORE:-}"
-              if [ -z "$PREV_COMMIT" ] || ! git cat-file -e "$PREV_COMMIT^{commit}" 2>/dev/null; then
-                  PREV_COMMIT="$(git rev-parse HEAD^)"
-              fi
-              
-              CURRENT_COMMIT="${GITHUB_SHA:-$(git rev-parse HEAD)}"
-              
-              echo "Comparing commits: $PREV_COMMIT...$CURRENT_COMMIT"
-              
-              # Use GitHub CLI to get the list of changed files
-              set +e  # Don't exit on error for API calls
-              CHANGED_FILES=$(gh api \
-                  repos/${GITHUB_REPOSITORY}/compare/${PREV_COMMIT}...${CURRENT_COMMIT} \
-                  --jq '.files[].filename' 2>/dev/null)
-              
-              # If GitHub API fails, fall back to git diff
-              if [[ $? -ne 0 ]] || [[ -z "$CHANGED_FILES" ]]; then
-                  echo "GitHub API failed, falling back to git diff..."
-                  CHANGED_FILES=$(git diff --name-only "$PREV_COMMIT" "$CURRENT_COMMIT" 2>/dev/null || echo "")
-              fi
-              set -e  # Re-enable exit on error
-              
-              # If we still can't get changed files, assume changes
-              if [[ -z "$CHANGED_FILES" ]]; then
-                  echo "Could not determine changed files, assuming changes"
-                  SOURCE_CHANGES="true"
-                  return 0
-              fi
-              
-              echo "Changed files:"
-              echo "$CHANGED_FILES" | while read -r file; do
-                  echo "  $file"
-              done
-              
-              # Parse filter patterns from JSON array
-              FILTER_PATTERNS=$(echo "$FILTER_PATTERN" | jq -r '.[]' 2>/dev/null || echo "")
-              
-              if [[ -z "$FILTER_PATTERNS" ]]; then
-                  echo "Could not parse filter patterns, assuming changes"
-                  SOURCE_CHANGES="true"
-                  return 0
-              fi
-              
-              echo "Filter patterns:"
-              echo "$FILTER_PATTERNS" | while read -r pattern; do
-                  echo "  $pattern"
-              done
-              
-              # Check if any changed file matches any filter pattern
-              SOURCE_CHANGES="false"
-              
-              while read -r changed_file; do
-                  [[ -z "$changed_file" ]] && continue
-                  
-                  while read -r pattern; do
-                      [[ -z "$pattern" ]] && continue
-                      
-                      # Convert glob pattern to shell pattern matching
-                      # Remove quotes if present
-                      pattern=$(echo "$pattern" | sed 's/^"//;s/"$//')
-                      
-                      # Use bash pattern matching
-                      if [[ "$changed_file" == $pattern ]]; then
-                          echo "File '$changed_file' matches pattern '$pattern'"
-                          SOURCE_CHANGES="true"
-                          break 2  # Break out of both loops
-                      fi
-                  done <<< "$FILTER_PATTERNS"
-              done <<< "$CHANGED_FILES"
-              
-              echo "Source changes detected: $SOURCE_CHANGES"
-          }
-          
-          # Function: Check for Existing Image (from build_image.sh)
-          check_existing_image() {
-              echo "Checking for existing image..."
-              
-              # Include environment in the image tag search
-              if [[ "${{ github.ref_name }}" == "main" ]]; then
-                ENV_TAG="prod"
-              else
-                ENV_TAG="dev"
-              fi
-              
-              LATEST_IMAGE_TAG=$(aws ecr describe-images \
-                --repository-name ${{ inputs.image_name }} \
-                --query "sort_by(imageDetails[?imageTags[?starts_with(@, '${{ inputs.image_name }}-${ENV_TAG}')]], &imagePushedAt)[-1].imageTags" \
-                --region ${AWS_REGION} \
-                --output json  | jq -r '.[0]' 2>/dev/null || echo "null")
-              
-              if [ "$LATEST_IMAGE_TAG" != "null" ] && [ "$LATEST_IMAGE_TAG" != "None" ] && [ -n "$LATEST_IMAGE_TAG" ]; then
-                HAS_EXISTING_IMAGE="true"
-                LATEST_IMAGE_URI="${ECR_REPOSITORY}:$LATEST_IMAGE_TAG"
-                echo "Found existing image: $LATEST_IMAGE_URI"
-              else
-                HAS_EXISTING_IMAGE="false"
-                echo "No existing image found"
-              fi
-          }
-          
-          # Run change detection
-          filter_changed_files
-          
-          # If no changes detected, check for existing image
-          if [[ "$SOURCE_CHANGES" == "false" ]]; then
-            check_existing_image
-            
-            if [[ "$HAS_EXISTING_IMAGE" == "true" ]]; then
-              SHOULD_BUILD="false"
-              EXISTING_IMAGE_URI="$LATEST_IMAGE_URI"
-              echo "No changes detected and existing image found. Skipping build."
-            else
-              echo "No changes detected but no existing image found. Will build."
-            fi
-          else
-            echo "Changes detected. Will build new image."
-          fi
-        else
-          echo "No filter pattern provided. Will build new image."
-        fi
-        
-        echo "should_build=$SHOULD_BUILD" >> $GITHUB_OUTPUT
-        echo "existing_image_uri=$EXISTING_IMAGE_URI" >> $GITHUB_OUTPUT
-
     - name: Build and Push Docker Image
-      if: steps.change-detection.outputs.should_build == 'true'
       id: build
-      uses: docker/build-push-action@v5
-      with:
-        context: ${{ inputs.context_path }}
-        file: ${{ inputs.dockerfile_path }}
-        push: true
-        tags: ${{ env.ECR_REPOSITORY }}:${{ inputs.image_name }}-${{ steps.env-setup.outputs.env_tag }}-${{ github.sha }}
-        labels: ${{ steps.meta.outputs.labels }}
-        provenance: ${{ inputs.disable_multi_arch == 'true' && 'false' || '' }}
-        build-args: |
-          BUILDKIT_INLINE_CACHE=1
-          ${{ inputs.build_args }}
-        cache-from: |
-          type=registry,ref=${{ env.ECR_REPOSITORY }}:${{ inputs.image_name }}-${{ steps.env-setup.outputs.env_tag }}-cache
-        cache-to: |
-          type=registry,ref=${{ env.ECR_REPOSITORY }}:${{ inputs.image_name }}-${{ steps.env-setup.outputs.env_tag }}-cache,mode=max,image-manifest=true,oci-mediatypes=true
+      shell: bash
+      run: |
+        IMAGE_TAG="${{ env.ECR_REPOSITORY }}:${{ inputs.image_name }}-${{ steps.env-setup.outputs.env_tag }}-${{ github.sha }}"
+        
+        # Convert multiline build arguments into --build-arg flags
+        BUILD_ARGS=""
+        while IFS= read -r line; do
+          [[ -z "$line" ]] && continue
+          BUILD_ARGS="$BUILD_ARGS --build-arg $line"
+        done <<< "${{ inputs.build_args }}"
+        
+        # Build the Docker image without caching flags
+        docker build \
+          --file "${{ inputs.dockerfile_path }}" \
+          --tag "$IMAGE_TAG" \
+          $BUILD_ARGS \
+          "${{ inputs.context_path }}"
+        
+        # Push the Docker image
+        docker push "$IMAGE_TAG"
 
     - name: Set Output
       id: set-output
       shell: bash
       run: |
-        if [[ "${{ steps.change-detection.outputs.should_build }}" == "true" ]]; then
-          echo "image_uri=${{ env.ECR_REPOSITORY }}:${{ inputs.image_name }}-${{ steps.env-setup.outputs.env_tag }}-${{ github.sha }}" >> $GITHUB_OUTPUT
-        else
-          echo "image_uri=${{ steps.change-detection.outputs.existing_image_uri }}" >> $GITHUB_OUTPUT
-        fi 
+        echo "image_uri=${{ env.ECR_REPOSITORY }}:${{ inputs.image_name }}-${{ steps.env-setup.outputs.env_tag }}-${{ github.sha }}" >> $GITHUB_OUTPUT 
