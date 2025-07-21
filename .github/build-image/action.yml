@@ -20,6 +20,9 @@ inputs:
     description: 'Cache scope for GitHub Actions cache'
     required: false
     default: ''
+  ecr_repository:
+    description: 'ECR repository name/URI for the Docker image'
+    required: true
   aws_access_key_id:
     description: 'AWS Access Key ID'
     required: true
@@ -43,11 +46,15 @@ inputs:
     description: 'Whether to disable multi-architecture builds by setting provenance to false'
     required: false
     default: 'true'
+  mutable_tag:
+    description: 'Optional tag suffix to use instead of commit SHA (e.g., "latest", "v1.0.0")'
+    required: false
+    default: ''
 
 outputs:
   image_uri:
     description: "The URI of the built image"
-    value: ${{ steps.set-output.outputs.image_uri }}
+    value: ${{ steps.build.outputs.image_uri }}
 
 runs:
   using: "composite"
@@ -98,7 +105,14 @@ runs:
       id: build
       shell: bash
       run: |
-        IMAGE_TAG="${{ env.ECR_REPOSITORY }}:${{ inputs.image_name }}-${{ steps.env-setup.outputs.env_tag }}-${{ github.sha }}"
+        # Determine tag suffix - use mutable_tag if provided, otherwise use commit SHA
+        if [[ -n "${{ inputs.mutable_tag }}" ]]; then
+          TAG_SUFFIX="${{ inputs.mutable_tag }}"
+        else
+          TAG_SUFFIX="${{ github.sha }}"
+        fi
+        
+        IMAGE_TAG="${{ inputs.ecr_repository }}:${{ inputs.image_name }}-${{ steps.env-setup.outputs.env_tag }}-$TAG_SUFFIX"
         
         # Convert multiline build arguments into --build-arg flags
         BUILD_ARGS=""
@@ -117,8 +131,6 @@ runs:
         # Push the Docker image
         docker push "$IMAGE_TAG"
 
-    - name: Set Output
-      id: set-output
-      shell: bash
-      run: |
-        echo "image_uri=${{ env.ECR_REPOSITORY }}:${{ inputs.image_name }}-${{ steps.env-setup.outputs.env_tag }}-${{ github.sha }}" >> $GITHUB_OUTPUT 
+        # Set output for the image URI
+        echo "image_uri=$IMAGE_TAG" >> $GITHUB_OUTPUT
+ 
