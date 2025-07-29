@@ -79,7 +79,7 @@ runs:
         GH_TOKEN: ${{ inputs.github_token }}
       run: |
         # Use helper script to determine if the previous run failed. Failures in the script should not fail the build.
-        bash "$GITHUB_ACTION_PATH/.github/package-lambda/check-previous-run.sh" \
+        bash "$GITHUB_ACTION_PATH/check-previous-run.sh" \
           --repo "${{ github.repository }}" \
           --branch "${{ github.ref_name }}" \
           --run-id "${{ github.run_id }}" \
@@ -97,7 +97,7 @@ runs:
       shell: bash
       run: |
         # Determine environment tag and S3 prefix using helper script
-        eval "$(bash \"$GITHUB_ACTION_PATH/.github/package-lambda/determine-env-and-key.sh\" --branch \"${{ github.ref_name }}\" --key-prefix \"${{ inputs.key_prefix }}\" --sha \"${{ github.sha }}\")"
+        eval "$(bash \"$GITHUB_ACTION_PATH/determine-env-and-key.sh\" --branch \"${{ github.ref_name }}\" --key-prefix \"${{ inputs.key_prefix }}\" --sha \"${{ github.sha }}\")"
         # List objects in S3 with the given prefix
         LATEST_PACKAGE=$(aws s3api list-objects-v2 \
           --bucket ${{ inputs.s3_bucket_name }} \
@@ -126,7 +126,7 @@ runs:
       shell: bash
       run: |
         # Compute env tag and S3 key using helper script
-        eval "$(bash \"$GITHUB_ACTION_PATH/.github/package-lambda/determine-env-and-key.sh\" --branch \"${{ github.ref_name }}\" --key-prefix \"${{ inputs.key_prefix }}\" --sha \"${{ github.sha }}\")"
+        eval "$(bash \"$GITHUB_ACTION_PATH/determine-env-and-key.sh\" --branch \"${{ github.ref_name }}\" --key-prefix \"${{ inputs.key_prefix }}\" --sha \"${{ github.sha }}\")"
         S3_KEY="$s3_key"
         S3_URI="s3://${{ inputs.s3_bucket_name }}/$S3_KEY"
         
@@ -139,7 +139,7 @@ runs:
           TEMP_DIR=$(mktemp -d)
           
           # Export build environment variables (if any) using helper script
-          source "$GITHUB_ACTION_PATH/.github/package-lambda/export-build-env.sh" --json "${{ inputs.build_env }}"
+          source "$GITHUB_ACTION_PATH/export-build-env.sh" --json "${{ inputs.build_env }}"
           
           # Copy Lambda code to the temp directory
           cp -r ${{ inputs.build_directory }}/* $TEMP_DIR/
