@@ -16,10 +16,6 @@ inputs:
     description: 'Build arguments for Docker build (multiline string)'
     required: false
     default: ''
-  cache_scope:
-    description: 'Cache scope for GitHub Actions cache'
-    required: false
-    default: ''
   ecr_repository:
     description: 'ECR repository name/URI for the Docker image'
     required: true
@@ -85,7 +81,7 @@ runs:
     - name: Login to Amazon ECR
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Determine Environment and Cache Scope
+    - name: Determine Environment
       id: env-setup
       shell: bash
       run: |
@@ -94,12 +90,13 @@ runs:
         else
           echo "env_tag=dev" >> $GITHUB_OUTPUT
         fi
-        
-        if [[ -n "${{ inputs.cache_scope }}" ]]; then
-          echo "cache_scope=${{ inputs.cache_scope }}" >> $GITHUB_OUTPUT
-        else
-          echo "cache_scope=${{ inputs.image_name }}-${{ github.ref_name }}" >> $GITHUB_OUTPUT
-        fi
+        # cache_scope logic removed – variable was unused.
+
+    - name: Validate Build Arguments
+      shell: bash
+      run: |
+        # Call validation script to ensure every build-arg is present in the Dockerfile
+        bash .github/build-image/validate-build-args.sh --dockerfile "${{ inputs.dockerfile_path }}" --build-args "${{ inputs.build_args }}"
 
     - name: Build and Push Docker Image
       id: build

@@ -78,30 +78,12 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github_token }}
       run: |
-        set +e  # Don't exit on error
-        # First get the previous workflow run
-        PREVIOUS_RUN_ID=$(gh api \
-          repos/${{ github.repository }}/actions/runs \
-          --jq ".workflow_runs[] | select(.head_branch == \"${{ github.ref_name }}\" and .id != ${{ github.run_id }}) | .id" \
-          | head -n 1 || echo "")
-        if [ -z "$PREVIOUS_RUN_ID" ]; then
-          echo "No previous workflow run found or API call failed"
-          echo "previous_failed=false" >> $GITHUB_OUTPUT
-          exit 0
-        fi
-        # Now get the jobs for that specific run
-        PREVIOUS_STATUS=$(gh api \
-          repos/${{ github.repository }}/actions/runs/$PREVIOUS_RUN_ID/jobs \
-          --jq ".jobs[] | select(.name | contains(\"package-${{ inputs.key_prefix }}\")) | .conclusion" \
-          | head -n 1 || echo "")
-        if [ "$PREVIOUS_STATUS" = "failure" ]; then
-          echo "Previous build failed"
-          echo "previous_failed=true" >> $GITHUB_OUTPUT
-        else
-          echo "Previous build succeeded or status check failed"
-          echo "previous_failed=false" >> $GITHUB_OUTPUT
-        fi
-        exit 0  # Ensure we don't fail the build
+        # Use helper script to determine if the previous run failed. Failures in the script should not fail the build.
+        bash .github/package-lambda/check-previous-run.sh \
+          --repo "${{ github.repository }}" \
+          --branch "${{ github.ref_name }}" \
+          --run-id "${{ github.run_id }}" \
+          --key-prefix "${{ inputs.key_prefix }}" >> $GITHUB_OUTPUT || echo "previous_failed=false" >> $GITHUB_OUTPUT
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -114,19 +96,12 @@ runs:
       id: check-package
       shell: bash
       run: |
-        # Include environment in the S3 key prefix
-        if [[ "${{ github.ref_name }}" == "main" ]]; then
-          ENV_TAG="prod"
-        else
-          ENV_TAG="dev"
-        fi
-        
-        S3_PREFIX="${{ inputs.key_prefix }}-${ENV_TAG}"
-        
+        # Determine environment tag and S3 prefix using helper script
+        eval "$(bash .github/package-lambda/determine-env-and-key.sh --branch \"${{ github.ref_name }}\" --key-prefix \"${{ inputs.key_prefix }}\" --sha \"${{ github.sha }}\")"
         # List objects in S3 with the given prefix
         LATEST_PACKAGE=$(aws s3api list-objects-v2 \
           --bucket ${{ inputs.s3_bucket_name }} \
-          --prefix "$S3_PREFIX" \
+          --prefix "$s3_prefix" \
           --query "sort_by(Contents, &LastModified)[-1].Key" \
           --output text || echo "")
           
@@ -150,13 +125,9 @@ runs:
       id: package-or-use
       shell: bash
       run: |
-        if [[ "${{ github.ref_name }}" == "main" ]]; then
-          ENV_TAG="prod"
-        else
-          ENV_TAG="dev"
-        fi
-        
-        S3_KEY="${{ inputs.key_prefix }}-${ENV_TAG}-${{ github.sha }}.zip"
+        # Compute env tag and S3 key using helper script
+        eval "$(bash .github/package-lambda/determine-env-and-key.sh --branch \"${{ github.ref_name }}\" --key-prefix \"${{ inputs.key_prefix }}\" --sha \"${{ github.sha }}\")"
+        S3_KEY="$s3_key"
         S3_URI="s3://${{ inputs.s3_bucket_name }}/$S3_KEY"
         
         if [[ "${{ steps.filter.outputs.source_changes }}" == "true" ]] || \
@@ -167,14 +138,8 @@ runs:
           # Create a temporary directory for packaging
           TEMP_DIR=$(mktemp -d)
           
-          # Parse build environment variables and create environment for the build
-          if [ -n "${{ inputs.build_env }}" ]; then
-            while IFS= read -r item; do
-              name=$(echo "$item" | jq -r '.name')
-              value=$(echo "$item" | jq -r '.value')
-              export "$name"="$value"
-            done < <(echo '${{ inputs.build_env }}' | jq -c '.[]')
-          fi
+          # Export build environment variables (if any) using helper script
+          source .github/package-lambda/export-build-env.sh --json "${{ inputs.build_env }}"
           
           # Copy Lambda code to the temp directory
           cp -r ${{ inputs.build_directory }}/* $TEMP_DIR/

@@ -1,0 +1,27 @@
+name: Shell Unit Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  shell-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          # Install bats and shellcheck from package manager
+          sudo apt-get install -y bats shellcheck
+
+      - name: Lint shell scripts
+        run: shellcheck .github/***.sh || true  # Do not fail build initially; adjust as rules tighten
+
+      - name: Run bats tests
+        run: bats tests/build-image

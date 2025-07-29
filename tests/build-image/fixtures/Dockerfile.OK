@@ -1,0 +1,4 @@
+ARG FOO
+ARG BAR
+
+FROM alpine:3.19 
