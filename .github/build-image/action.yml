@@ -96,7 +96,7 @@ runs:
       shell: bash
       run: |
         # Call validation script to ensure every build-arg is present in the Dockerfile
-        bash .github/build-image/validate-build-args.sh --dockerfile "${{ inputs.dockerfile_path }}" --build-args "${{ inputs.build_args }}"
+        bash "$GITHUB_ACTION_PATH/.github/build-image/validate-build-args.sh" --dockerfile "${{ inputs.dockerfile_path }}" --build-args "${{ inputs.build_args }}"
 
     - name: Build and Push Docker Image
       id: build
