@@ -36,6 +36,9 @@ inputs:
   tf_var_vault_token:
     description: 'Vault Token'
     required: true
+  s3_key_date:
+    description: 'Date for S3 key structure (YYYY/MM format)'
+    required: false
 
 runs:
   using: "composite"
@@ -64,7 +67,12 @@ runs:
       env:
         TF_VAR_env: ${{ inputs.tf_var_env }}
       run: |
-        aws s3 cp s3://${{ inputs.s3_bucket_name }}/${{ inputs.pr_id }}-${{ inputs.tf_var_env }}-tfplan ${{ inputs.terraform_directory }}/tfplan
+        if [ -n "${{ inputs.s3_key_date }}" ]; then
+          S3_KEY="${{ inputs.s3_key_date }}/${{ inputs.pr_id }}-${{ inputs.tf_var_env }}-tfplan"
+        else
+          S3_KEY="${{ inputs.pr_id }}-${{ inputs.tf_var_env }}-tfplan"
+        fi
+        aws s3 cp s3://${{ inputs.s3_bucket_name }}/$S3_KEY ${{ inputs.terraform_directory }}/tfplan
 
     - name: Terraform Apply
       id: apply
