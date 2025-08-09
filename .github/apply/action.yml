@@ -27,14 +27,8 @@ inputs:
   aws_region:
     description: 'AWS Region'
     required: true
-  tf_api_token:
-    description: 'Terraform API Token'
-    required: true
   tf_var_env:
     description: 'Environment to apply for'
-    required: true
-  tf_var_vault_token:
-    description: 'Vault Token'
     required: true
   s3_key_date:
     description: 'Date for S3 key structure (YYYY/MM format)'
@@ -47,7 +41,6 @@ runs:
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: ${{ inputs.terraform_version }}
-        cli_config_credentials_token: ${{ inputs.tf_api_token }}
         terraform_wrapper: false
 
     - name: Configure AWS Credentials
@@ -83,7 +76,6 @@ runs:
         TF_VAR_aws_access_key_id: ${{ inputs.aws_access_key_id }}
         TF_VAR_aws_secret_access_key: ${{ inputs.aws_secret_access_key }}
         TF_VAR_aws_region: ${{ inputs.aws_region }}
-        TF_VAR_vault_token: ${{ inputs.tf_var_vault_token }}
       run: |
         set -e
         terraform apply -input=false tfplan
