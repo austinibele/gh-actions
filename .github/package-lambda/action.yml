@@ -78,12 +78,17 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github_token }}
       run: |
-        # Use helper script to determine if the previous run failed. Failures in the script should not fail the build.
+        set -Eeuo pipefail
+        # Use helper script to determine if the previous run failed. Any failure here should fail fast.
+        if [ ! -f "$GITHUB_ACTION_PATH/check-previous-run.sh" ]; then
+          echo "Missing helper: $GITHUB_ACTION_PATH/check-previous-run.sh" >&2
+          exit 1
+        fi
         bash "$GITHUB_ACTION_PATH/check-previous-run.sh" \
           --repo "${{ github.repository }}" \
           --branch "${{ github.ref_name }}" \
           --run-id "${{ github.run_id }}" \
-          --key-prefix "${{ inputs.key_prefix }}" >> $GITHUB_OUTPUT || echo "previous_failed=false" >> $GITHUB_OUTPUT
+          --key-prefix "${{ inputs.key_prefix }}" >> $GITHUB_OUTPUT
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -96,8 +101,17 @@ runs:
       id: check-package
       shell: bash
       run: |
+        set -Eeuo pipefail
         # Determine environment tag and S3 prefix using helper script
+        if [ ! -f "$GITHUB_ACTION_PATH/determine-env-and-key.sh" ]; then
+          echo "Missing helper: $GITHUB_ACTION_PATH/determine-env-and-key.sh" >&2
+          exit 1
+        fi
         eval "$(bash \"$GITHUB_ACTION_PATH/determine-env-and-key.sh\" --branch \"${{ github.ref_name }}\" --key-prefix \"${{ inputs.key_prefix }}\" --sha \"${{ github.sha }}\")"
+        if [ -z "${s3_prefix:-}" ]; then
+          echo "Failed to compute s3_prefix" >&2
+          exit 1
+        fi
         # List objects in S3 with the given prefix
         LATEST_PACKAGE=$(aws s3api list-objects-v2 \
           --bucket ${{ inputs.s3_bucket_name }} \
@@ -125,9 +139,18 @@ runs:
       id: package-or-use
       shell: bash
       run: |
+        set -Eeuo pipefail
         # Compute env tag and S3 key using helper script
+        if [ ! -f "$GITHUB_ACTION_PATH/determine-env-and-key.sh" ]; then
+          echo "Missing helper: $GITHUB_ACTION_PATH/determine-env-and-key.sh" >&2
+          exit 1
+        fi
         eval "$(bash \"$GITHUB_ACTION_PATH/determine-env-and-key.sh\" --branch \"${{ github.ref_name }}\" --key-prefix \"${{ inputs.key_prefix }}\" --sha \"${{ github.sha }}\")"
         S3_KEY="$s3_key"
+        if [ -z "${S3_KEY:-}" ]; then
+          echo "Failed to compute S3_KEY" >&2
+          exit 1
+        fi
         S3_URI="s3://${{ inputs.s3_bucket_name }}/$S3_KEY"
         
         if [[ "${{ steps.filter.outputs.source_changes }}" == "true" ]] || \
@@ -170,5 +193,9 @@ runs:
           echo "s3_key=$S3_KEY" >> $GITHUB_OUTPUT
         else
           echo "Using existing Lambda package..."
+          if [ -z "${{ steps.check-package.outputs.latest_package_key }}" ] || [ "${{ steps.check-package.outputs.latest_package_key }}" = "None" ]; then
+            echo "No existing Lambda package found for prefix '$s3_prefix'" >&2
+            exit 1
+          fi
           echo "s3_key=${{ steps.check-package.outputs.latest_package_key }}" >> $GITHUB_OUTPUT
         fi 
