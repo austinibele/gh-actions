@@ -107,7 +107,7 @@ runs:
           echo "Missing helper: $GITHUB_ACTION_PATH/determine-env-and-key.sh" >&2
           exit 1
         fi
-        eval "$(bash \"$GITHUB_ACTION_PATH/determine-env-and-key.sh\" --branch \"${{ github.ref_name }}\" --key-prefix \"${{ inputs.key_prefix }}\" --sha \"${{ github.sha }}\")"
+        eval "$(bash "$GITHUB_ACTION_PATH/determine-env-and-key.sh" --branch "${{ github.ref_name }}" --key-prefix "${{ inputs.key_prefix }}" --sha "${{ github.sha }}")"
         if [ -z "${s3_prefix:-}" ]; then
           echo "Failed to compute s3_prefix" >&2
           exit 1
@@ -145,7 +145,7 @@ runs:
           echo "Missing helper: $GITHUB_ACTION_PATH/determine-env-and-key.sh" >&2
           exit 1
         fi
-        eval "$(bash \"$GITHUB_ACTION_PATH/determine-env-and-key.sh\" --branch \"${{ github.ref_name }}\" --key-prefix \"${{ inputs.key_prefix }}\" --sha \"${{ github.sha }}\")"
+        eval "$(bash "$GITHUB_ACTION_PATH/determine-env-and-key.sh" --branch "${{ github.ref_name }}" --key-prefix "${{ inputs.key_prefix }}" --sha "${{ github.sha }}")"
         S3_KEY="$s3_key"
         if [ -z "${S3_KEY:-}" ]; then
           echo "Failed to compute S3_KEY" >&2
