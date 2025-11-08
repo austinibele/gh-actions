@@ -1,22 +1,20 @@
-# .github/apply/action.yml
-
-name: "Terraform setup and apply"
-description: "Applies a terraform plan file from S3"
+name: 'Terraform setup and plan'
+description: 'Setup Terraform and create plan artifact in S3'
 inputs:
-  terraform_directory: 
+  terraform_directory:
     description: 'Directory that holds Terraform code'
     required: true
-  terraform_version: 
+  terraform_version:
     description: 'Terraform Version'
     required: true
-  PAT: 
-    description: 'GitHub token for authentication'
+  PAT:
+    description: 'GitHub token for auth'
     required: true
   pr_id:
     description: 'Pull request ID'
     required: true
   s3_bucket_name:
-    description: 'S3 bucket ARN'
+    description: 'S3 bucket name'
     required: true
   aws_access_key_id:
     description: 'AWS Access Key ID'
@@ -28,10 +26,10 @@ inputs:
     description: 'AWS Region'
     required: true
   tf_var_env:
-    description: 'Environment to apply for'
+    description: 'Optional Terraform environment'
     required: false
   s3_key_date:
-    description: 'Date for S3 key structure (YYYY/MM format)'
+    description: 'Optional date prefix for S3 key (YYYY/MM format)'
     required: false
   backend_config_file:
     description: 'Optional backend config file path relative to the terraform directory'
@@ -57,6 +55,7 @@ runs:
         aws-region: ${{ inputs.aws_region }}
 
     - name: Terraform Init
+      id: init
       working-directory: ${{ inputs.terraform_directory }}
       shell: bash
       env:
@@ -74,13 +73,27 @@ runs:
         fi
         terraform init --backend-config="$BACKEND_FILE"
 
-    - name: Download Plan from S3
+    - name: Terraform Plan
+      id: plan
+      working-directory: ${{ inputs.terraform_directory }}
       shell: bash
       env:
         TF_VAR_env: ${{ inputs.tf_var_env }}
+        TF_VAR_aws_access_key_id: ${{ inputs.aws_access_key_id }}
+        TF_VAR_aws_secret_access_key: ${{ inputs.aws_secret_access_key }}
+        TF_VAR_aws_region: ${{ inputs.aws_region }}
+      run: |
+        set -e
+        terraform plan -out=tfplan
+
+    - name: Upload Plan to S3
+      shell: bash
+      env:
         PLAN_KEY: ${{ inputs.plan_key }}
+        TF_VAR_env: ${{ inputs.tf_var_env }}
         S3_KEY_DATE: ${{ inputs.s3_key_date }}
         PR_ID: ${{ inputs.pr_id }}
+        S3_BUCKET_NAME: ${{ inputs.s3_bucket_name }}
       run: |
         if [ -n "$PLAN_KEY" ]; then
           S3_KEY="$PLAN_KEY"
@@ -97,17 +110,6 @@ runs:
             S3_KEY="$KEY"
           fi
         fi
-        aws s3 cp s3://${{ inputs.s3_bucket_name }}/$S3_KEY ${{ inputs.terraform_directory }}/tfplan
 
-    - name: Terraform Apply
-      id: apply
-      working-directory: ${{ inputs.terraform_directory }}
-      shell: bash
-      env:
-        TF_VAR_env: ${{ inputs.tf_var_env }}
-        TF_VAR_aws_access_key_id: ${{ inputs.aws_access_key_id }}
-        TF_VAR_aws_secret_access_key: ${{ inputs.aws_secret_access_key }}
-        TF_VAR_aws_region: ${{ inputs.aws_region }}
-      run: |
-        set -e
-        terraform apply -input=false tfplan
+        aws s3 cp "${{ inputs.terraform_directory }}/tfplan" "s3://$S3_BUCKET_NAME/$S3_KEY"
+
