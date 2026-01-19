@@ -11,10 +11,10 @@ inputs:
     description: 'GitHub token for auth'
     required: true
   pr_id:
-    description: 'Pull request ID'
+    description: 'Pull request ID or commit SHA'
     required: true
   s3_bucket_name:
-    description: 'S3 bucket name'
+    description: 'S3 bucket name for storing plan artifacts'
     required: true
   aws_access_key_id:
     description: 'AWS Access Key ID'
@@ -26,16 +26,19 @@ inputs:
     description: 'AWS Region'
     required: true
   tf_var_env:
-    description: 'Optional Terraform environment'
+    description: 'Terraform environment (dev/prod). If not provided, extracted from tf_vars_json.env or defaults to dev'
+    required: false
+  tf_vars_json:
+    description: 'JSON object mapping Terraform variable names to values, e.g. {"env":"dev","image_uri":"..."}'
     required: false
   s3_key_date:
-    description: 'Optional date prefix for S3 key (YYYY/MM format)'
+    description: 'Date prefix for S3 key (YYYY/MM format)'
     required: false
   backend_config_file:
-    description: 'Optional backend config file path relative to the terraform directory'
+    description: 'Backend config file path relative to terraform_directory (e.g., "backend.dev.hcl"). If not provided, defaults to env/backend_s3_${env}.hcl'
     required: false
   plan_key:
-    description: 'Optional explicit S3 object key for the plan file (include tfplan filename)'
+    description: 'Explicit S3 object key for the plan file (overrides default key generation)'
     required: false
 
 runs:
@@ -54,62 +57,98 @@ runs:
         aws-secret-access-key: ${{ inputs.aws_secret_access_key }}
         aws-region: ${{ inputs.aws_region }}
 
+    - name: Resolve Environment
+      id: resolve-env
+      shell: bash
+      env:
+        TF_VAR_ENV_INPUT: ${{ inputs.tf_var_env }}
+        TF_VARS_JSON: ${{ inputs.tf_vars_json }}
+      run: |
+        set -Eeuo pipefail
+        ENV_NAME="${TF_VAR_ENV_INPUT}"
+        if [ -z "$ENV_NAME" ] && [ -n "${TF_VARS_JSON:-}" ]; then
+          ENV_NAME=$(echo "$TF_VARS_JSON" | jq -r '.env // empty')
+        fi
+        if [ -z "$ENV_NAME" ]; then
+          echo "Env not explicitly provided; defaulting to 'dev'"
+          ENV_NAME="dev"
+        fi
+        echo "TF_VAR_env=$ENV_NAME" >> "$GITHUB_ENV"
+        echo "env_name=$ENV_NAME" >> "$GITHUB_OUTPUT"
+        echo "Resolved environment: $ENV_NAME"
+
     - name: Terraform Init
       id: init
       working-directory: ${{ inputs.terraform_directory }}
       shell: bash
       env:
-        TF_VAR_env: ${{ inputs.tf_var_env }}
         BACKEND_CONFIG_FILE: ${{ inputs.backend_config_file }}
       run: |
-        set -e
+        set -Eeuo pipefail
         BACKEND_FILE="${BACKEND_CONFIG_FILE}"
         if [ -z "$BACKEND_FILE" ]; then
-          if [ -n "$TF_VAR_env" ]; then
-            BACKEND_FILE="env/backend_s3_${TF_VAR_env}.hcl"
-          else
-            BACKEND_FILE="env/backend_s3.hcl"
-          fi
+          BACKEND_FILE="env/backend_s3_${TF_VAR_env}.hcl"
         fi
-        terraform init --backend-config="$BACKEND_FILE"
+        echo "Using backend config: $BACKEND_FILE"
+        terraform init -no-color --backend-config="$BACKEND_FILE"
+
+    - name: Export Core TF Vars
+      shell: bash
+      run: |
+        {
+          echo "TF_VAR_aws_access_key_id=${{ inputs.aws_access_key_id }}";
+          echo "TF_VAR_aws_secret_access_key=${{ inputs.aws_secret_access_key }}";
+          echo "TF_VAR_aws_region=${{ inputs.aws_region }}";
+        } >> "$GITHUB_ENV"
+
+    - name: Export TF Vars from JSON
+      shell: bash
+      env:
+        TF_VARS_JSON: ${{ inputs.tf_vars_json }}
+      run: |
+        set -Eeuo pipefail
+        if [ -n "${TF_VARS_JSON:-}" ]; then
+          echo "Validating tf_vars_json"
+          JSON_TYPE=$(echo "$TF_VARS_JSON" | jq -r 'type' || true)
+          if [ "$JSON_TYPE" != "object" ]; then
+            echo "tf_vars_json must be a JSON object; got type: $JSON_TYPE" >&2
+            exit 1
+          fi
+          echo "Exporting TF vars from tf_vars_json (keys only):"
+          echo "$TF_VARS_JSON" | jq -r 'keys[]' | sed 's/^/  - /'
+          echo "$TF_VARS_JSON" | jq -r 'to_entries[] | "TF_VAR_\(.key)=\(.value)"' >> "$GITHUB_ENV"
+        else
+          echo "No tf_vars_json provided"
+        fi
 
     - name: Terraform Plan
       id: plan
       working-directory: ${{ inputs.terraform_directory }}
       shell: bash
-      env:
-        TF_VAR_env: ${{ inputs.tf_var_env }}
-        TF_VAR_aws_access_key_id: ${{ inputs.aws_access_key_id }}
-        TF_VAR_aws_secret_access_key: ${{ inputs.aws_secret_access_key }}
-        TF_VAR_aws_region: ${{ inputs.aws_region }}
       run: |
-        set -e
-        terraform plan -out=tfplan
+        set -Eeuo pipefail
+        echo "Terraform version: $(terraform version | head -n1)"
+        terraform validate -no-color || echo "terraform validate failed (continuing to plan)"
+        terraform plan -input=false -no-color -out=tfplan
 
     - name: Upload Plan to S3
       shell: bash
       env:
         PLAN_KEY: ${{ inputs.plan_key }}
-        TF_VAR_env: ${{ inputs.tf_var_env }}
         S3_KEY_DATE: ${{ inputs.s3_key_date }}
         PR_ID: ${{ inputs.pr_id }}
         S3_BUCKET_NAME: ${{ inputs.s3_bucket_name }}
       run: |
+        set -Eeuo pipefail
         if [ -n "$PLAN_KEY" ]; then
           S3_KEY="$PLAN_KEY"
         else
-          KEY="$PR_ID"
-          if [ -n "$TF_VAR_env" ]; then
-            KEY="$KEY-$TF_VAR_env"
-          fi
-          KEY="$KEY-tfplan"
-
+          KEY="$PR_ID-${TF_VAR_env}-tfplan"
           if [ -n "$S3_KEY_DATE" ]; then
             S3_KEY="$S3_KEY_DATE/$KEY"
           else
             S3_KEY="$KEY"
           fi
         fi
-
-        aws s3 cp "${{ inputs.terraform_directory }}/tfplan" "s3://$S3_BUCKET_NAME/$S3_KEY"
-
+        echo "Uploading plan to s3://$S3_BUCKET_NAME/$S3_KEY"
+        aws s3 cp "${{ inputs.terraform_directory }}/tfplan" "s3://$S3_BUCKET_NAME/$S3_KEY" --only-show-errors

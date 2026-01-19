@@ -13,10 +13,10 @@ inputs:
     description: 'GitHub token for authentication'
     required: true
   pr_id:
-    description: 'Pull request ID'
+    description: 'Pull request ID or commit SHA'
     required: true
   s3_bucket_name:
-    description: 'S3 bucket ARN'
+    description: 'S3 bucket name for plan artifacts'
     required: true
   aws_access_key_id:
     description: 'AWS Access Key ID'
@@ -28,16 +28,16 @@ inputs:
     description: 'AWS Region'
     required: true
   tf_var_env:
-    description: 'Environment to apply for'
+    description: 'Terraform environment (dev/prod)'
     required: false
   s3_key_date:
-    description: 'Date for S3 key structure (YYYY/MM format)'
+    description: 'Date prefix for S3 key (YYYY/MM format)'
     required: false
   backend_config_file:
-    description: 'Optional backend config file path relative to the terraform directory'
+    description: 'Backend config file path relative to terraform_directory (e.g., "backend.dev.hcl"). If not provided, defaults to env/backend_s3_${env}.hcl'
     required: false
   plan_key:
-    description: 'Optional explicit S3 object key for the plan file (include tfplan filename)'
+    description: 'Explicit S3 object key for the plan file (overrides default key generation)'
     required: false
 
 runs:
@@ -63,7 +63,7 @@ runs:
         TF_VAR_env: ${{ inputs.tf_var_env }}
         BACKEND_CONFIG_FILE: ${{ inputs.backend_config_file }}
       run: |
-        set -e
+        set -Eeuo pipefail
         BACKEND_FILE="${BACKEND_CONFIG_FILE}"
         if [ -z "$BACKEND_FILE" ]; then
           if [ -n "$TF_VAR_env" ]; then
@@ -72,7 +72,8 @@ runs:
             BACKEND_FILE="env/backend_s3.hcl"
           fi
         fi
-        terraform init --backend-config="$BACKEND_FILE"
+        echo "Using backend config: $BACKEND_FILE"
+        terraform init -no-color --backend-config="$BACKEND_FILE"
 
     - name: Download Plan from S3
       shell: bash
@@ -82,6 +83,7 @@ runs:
         S3_KEY_DATE: ${{ inputs.s3_key_date }}
         PR_ID: ${{ inputs.pr_id }}
       run: |
+        set -Eeuo pipefail
         if [ -n "$PLAN_KEY" ]; then
           S3_KEY="$PLAN_KEY"
         else
@@ -90,14 +92,14 @@ runs:
             KEY="$KEY-$TF_VAR_env"
           fi
           KEY="$KEY-tfplan"
-
           if [ -n "$S3_KEY_DATE" ]; then
             S3_KEY="$S3_KEY_DATE/$KEY"
           else
             S3_KEY="$KEY"
           fi
         fi
-        aws s3 cp s3://${{ inputs.s3_bucket_name }}/$S3_KEY ${{ inputs.terraform_directory }}/tfplan
+        echo "Downloading plan from s3://${{ inputs.s3_bucket_name }}/$S3_KEY"
+        aws s3 cp "s3://${{ inputs.s3_bucket_name }}/$S3_KEY" "${{ inputs.terraform_directory }}/tfplan" --only-show-errors
 
     - name: Terraform Apply
       id: apply
@@ -109,5 +111,6 @@ runs:
         TF_VAR_aws_secret_access_key: ${{ inputs.aws_secret_access_key }}
         TF_VAR_aws_region: ${{ inputs.aws_region }}
       run: |
-        set -e
+        set -Eeuo pipefail
+        echo "Applying terraform plan..."
         terraform apply -input=false tfplan
