@@ -40,6 +40,10 @@ inputs:
   plan_key:
     description: 'Explicit S3 object key for the plan file (overrides default key generation)'
     required: false
+  refresh:
+    description: 'Whether to refresh state before planning. Set to true to detect drift from manually deleted resources. Default: true'
+    required: false
+    default: 'true'
 
 runs:
   using: "composite"
@@ -125,11 +129,14 @@ runs:
       id: plan
       working-directory: ${{ inputs.terraform_directory }}
       shell: bash
+      env:
+        REFRESH: ${{ inputs.refresh }}
       run: |
         set -Eeuo pipefail
         echo "Terraform version: $(terraform version | head -n1)"
         terraform validate -no-color || echo "terraform validate failed (continuing to plan)"
-        terraform plan -input=false -no-color -out=tfplan
+        echo "Running plan with refresh=$REFRESH"
+        terraform plan -input=false -no-color -refresh="$REFRESH" -out=tfplan
 
     - name: Upload Plan to S3
       shell: bash
