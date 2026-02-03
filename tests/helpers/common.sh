@@ -23,6 +23,7 @@ create_stub_path() {
 #   - *oldsha.json: returns {"status":"success","last_success_sha":"deadbeef"}
 #   - *samesha.json: returns {"status":"success","last_success_sha":"cafebabe"}
 #   - *building.json: returns {"status":"building","last_success_sha":"deadbeef"}
+#   - *failure-no-success.json: returns {"status":"failure"} (no last_success_sha - first failed build)
 create_aws_stub() {
   local stub_dir="$1"
   mkdir -p "${stub_dir}"
@@ -51,6 +52,11 @@ if [[ "$src" == s3://* ]]; then
     *failure.json)
       cat <<EOF >"$dst"
 {"status":"failure","last_success_sha":"deadbeef"}
+EOF
+      exit 0;;
+    *failure-no-success.json)
+      cat <<EOF >"$dst"
+{"status":"failure","last_attempt_sha":"abc123"}
 EOF
       exit 0;;
     *oldsha.json)

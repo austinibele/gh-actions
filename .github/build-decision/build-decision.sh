@@ -77,9 +77,9 @@ main() {
 
   # If ledger says we should build (missing or failed status)
   if [[ "$LEDGER_SHOULD_BUILD" == "true" ]]; then
-    # Determine if it's missing or failed
+    # Determine reason based on whether ledger file exists
     local reason="ledger_missing"
-    if [[ -n "$last_success_sha" ]]; then
+    if [[ "${LEDGER_FILE_EXISTS:-false}" == "true" ]]; then
       reason="ledger_failed"
     fi
     echo "Ledger indicates build needed (reason: $reason)" >&2

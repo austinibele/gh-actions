@@ -87,6 +87,29 @@ Describe 'build-decision.sh'
       The output should include "should_build=true"
       The output should include "reason=ledger_failed"
     End
+
+    It 'outputs reason=ledger_failed when ledger exists with failure but no last_success_sha'
+      When run bash -c '
+        source "'"${SCRIPT_DIR}"'/../helpers/common.sh"
+        stub_dir=$(mktemp -d)
+        PATH="$stub_dir:$PATH"
+        create_aws_stub "$stub_dir"
+        create_git_stub "$stub_dir" ""
+        
+        export ARTIFACT_ID="failure-no-success"
+        export FILTER_PATTERNS="[\"src/**\"]"
+        export S3_BUCKET="test-bucket"
+        export CHECK_PREVIOUS_RUN="false"
+        export GITHUB_OUTPUT=$(mktemp)
+        export GITHUB_SHA="abc123"
+        
+        bash "$SCRIPT_UNDER_TEST" 2>/dev/null
+        grep "should_build" "$GITHUB_OUTPUT"
+        grep "reason" "$GITHUB_OUTPUT"
+      '
+      The output should include "should_build=true"
+      The output should include "reason=ledger_failed"
+    End
   End
 
   Describe 'Source changed scenario'

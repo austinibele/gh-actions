@@ -92,6 +92,45 @@ Describe 'ledger.sh::ledger_check'
     The output should equal "deadbeef"
   End
 
+  It 'sets LEDGER_FILE_EXISTS=false when ledger file is missing'
+    When run bash -c '
+      source "$SCRIPT_UNDER_TEST"
+      source "'"${SCRIPT_DIR}"'/../helpers/common.sh"
+      stub_dir=$(mktemp -d)
+      PATH="$stub_dir:$PATH"
+      create_aws_stub "$stub_dir"
+      ledger_check "missing" "cafebabe" "dummy-bucket"
+      echo "$LEDGER_FILE_EXISTS"
+    '
+    The output should equal "false"
+  End
+
+  It 'sets LEDGER_FILE_EXISTS=true when ledger file exists with failure status'
+    When run bash -c '
+      source "$SCRIPT_UNDER_TEST"
+      source "'"${SCRIPT_DIR}"'/../helpers/common.sh"
+      stub_dir=$(mktemp -d)
+      PATH="$stub_dir:$PATH"
+      create_aws_stub "$stub_dir"
+      ledger_check "failure" "cafebabe" "dummy-bucket"
+      echo "$LEDGER_FILE_EXISTS"
+    '
+    The output should equal "true"
+  End
+
+  It 'sets LEDGER_FILE_EXISTS=true when ledger file exists with success status'
+    When run bash -c '
+      source "$SCRIPT_UNDER_TEST"
+      source "'"${SCRIPT_DIR}"'/../helpers/common.sh"
+      stub_dir=$(mktemp -d)
+      PATH="$stub_dir:$PATH"
+      create_aws_stub "$stub_dir"
+      ledger_check "oldsha" "cafebabe" "dummy-bucket"
+      echo "$LEDGER_FILE_EXISTS"
+    '
+    The output should equal "true"
+  End
+
   It 'returns error when bucket is not provided'
     When run bash -c '
       source "$SCRIPT_UNDER_TEST"

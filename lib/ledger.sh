@@ -9,6 +9,7 @@
 #   ledger_check <artifact_id> <sha> <bucket> [prefix]
 #     → Sets: LEDGER_SHOULD_BUILD ("true"|"false")
 #     → Sets: LEDGER_LAST_SUCCESS_SHA (commit SHA or empty)
+#     → Sets: LEDGER_FILE_EXISTS ("true"|"false")
 #
 #   ledger_write <artifact_id> <status> <sha> <bucket> [prefix]
 #     → Writes status record to S3
@@ -35,7 +36,7 @@ _ledger_fetch() {
 }
 
 # Public: Check ledger state and decide if artifact should be rebuilt
-# Sets LEDGER_SHOULD_BUILD ("true"|"false") and LEDGER_LAST_SUCCESS_SHA
+# Sets LEDGER_SHOULD_BUILD ("true"|"false"), LEDGER_LAST_SUCCESS_SHA, and LEDGER_FILE_EXISTS ("true"|"false")
 ledger_check() {
   local artifact_id="$1"
   local sha="$2"
@@ -50,14 +51,16 @@ ledger_check() {
   # Default to true until proven otherwise (missing file or errors force build)
   LEDGER_SHOULD_BUILD="true"
   LEDGER_LAST_SUCCESS_SHA=""
+  LEDGER_FILE_EXISTS="false"
 
   local json status last_success_sha
   if ! json=$(_ledger_fetch "${bucket}" "${artifact_id}" "${prefix}"); then
     # Ledger file missing – need build
-    export LEDGER_SHOULD_BUILD LEDGER_LAST_SUCCESS_SHA
+    export LEDGER_SHOULD_BUILD LEDGER_LAST_SUCCESS_SHA LEDGER_FILE_EXISTS
     return 0
   fi
 
+  LEDGER_FILE_EXISTS="true"
   status="$(echo "${json}" | jq -r '.status // "unknown"')"
   last_success_sha="$(echo "${json}" | jq -r '.last_success_sha // ""')"
 
@@ -67,13 +70,13 @@ ledger_check() {
   # If status not success, we must rebuild
   if [[ "${status}" != "success" ]]; then
     LEDGER_SHOULD_BUILD="true"
-    export LEDGER_SHOULD_BUILD LEDGER_LAST_SUCCESS_SHA
+    export LEDGER_SHOULD_BUILD LEDGER_LAST_SUCCESS_SHA LEDGER_FILE_EXISTS
     return 0
   fi
 
   # Status success – leave rebuild decision to file-level diff; default to skip
   LEDGER_SHOULD_BUILD="false"
-  export LEDGER_SHOULD_BUILD LEDGER_LAST_SUCCESS_SHA
+  export LEDGER_SHOULD_BUILD LEDGER_LAST_SUCCESS_SHA LEDGER_FILE_EXISTS
   return 0
 }
 
