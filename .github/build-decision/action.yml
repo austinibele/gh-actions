@@ -1,0 +1,57 @@
+name: 'Build Decision'
+description: 'Artifact-agnostic build decision logic using S3 ledger, change detection, and previous run status'
+
+inputs:
+  artifact_id:
+    description: 'Unique identifier for the artifact'
+    required: true
+  filter_patterns:
+    description: 'JSON array of glob patterns to watch for changes'
+    required: true
+  s3_bucket:
+    description: 'S3 bucket for ledger storage'
+    required: true
+  ledger_prefix:
+    description: 'S3 key prefix for ledger files'
+    default: 'build-ledger/'
+  check_previous_run:
+    description: 'Check if previous workflow run failed'
+    default: 'true'
+  job_pattern:
+    description: 'Pattern to match job name for previous run check'
+    required: false
+  force_build:
+    description: 'Force rebuild regardless of checks'
+    default: 'false'
+
+outputs:
+  should_build:
+    description: '"true" or "false"'
+    value: ${{ steps.decision.outputs.should_build }}
+  reason:
+    description: 'Reason for decision: source_changed | previous_failed | ledger_missing | ledger_failed | forced | no_changes'
+    value: ${{ steps.decision.outputs.reason }}
+  last_success_sha:
+    description: 'SHA of last successful build'
+    value: ${{ steps.decision.outputs.last_success_sha }}
+  changed_files:
+    description: 'List of changed files (if any)'
+    value: ${{ steps.decision.outputs.changed_files }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Make decision
+      id: decision
+      shell: bash
+      env:
+        ARTIFACT_ID: ${{ inputs.artifact_id }}
+        FILTER_PATTERNS: ${{ inputs.filter_patterns }}
+        S3_BUCKET: ${{ inputs.s3_bucket }}
+        LEDGER_PREFIX: ${{ inputs.ledger_prefix }}
+        CHECK_PREVIOUS_RUN: ${{ inputs.check_previous_run }}
+        JOB_PATTERN: ${{ inputs.job_pattern }}
+        FORCE_BUILD: ${{ inputs.force_build }}
+      run: |
+        # Run the build decision script
+        ${{ github.action_path }}/build-decision.sh

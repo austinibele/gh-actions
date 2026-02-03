@@ -20,8 +20,16 @@ jobs:
           # Install bats and shellcheck from package manager
           sudo apt-get install -y bats shellcheck
 
+      - name: Install ShellSpec
+        run: |
+          curl -fsSL https://git.io/shellspec | sh -s -- --yes
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
       - name: Lint shell scripts
-        run: shellcheck .github/***.sh || true  # Do not fail build initially; adjust as rules tighten
+        run: shellcheck .github/**/*.sh lib/*.sh || true  # Do not fail build initially
 
       - name: Run bats tests
-        run: bats tests/build-image
+        run: bats tests/package-lambda
+
+      - name: Run ShellSpec tests
+        run: shellspec --format documentation

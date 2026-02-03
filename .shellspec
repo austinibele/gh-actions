@@ -1,0 +1,5 @@
+--default-path tests
+--pattern tests/**/*_spec.sh
+--pattern tests/*_spec.sh
+--execdir @specfile
+--no-warning-as-failure

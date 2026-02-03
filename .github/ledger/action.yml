@@ -1,0 +1,77 @@
+name: 'Ledger'
+description: 'S3-based build status tracking - check or write ledger entries'
+
+inputs:
+  action:
+    description: 'Action to perform: "check" or "write"'
+    required: true
+  artifact_id:
+    description: 'Unique identifier for the artifact'
+    required: true
+  s3_bucket:
+    description: 'S3 bucket for ledger storage'
+    required: true
+  ledger_prefix:
+    description: 'S3 key prefix for ledger files'
+    default: 'build-ledger/'
+  sha:
+    description: 'Commit SHA (defaults to GITHUB_SHA)'
+    required: false
+  status:
+    description: 'Build status for write action: "success", "failure", or "building"'
+    required: false
+
+outputs:
+  should_build:
+    description: 'For check action: "true" or "false"'
+    value: ${{ steps.ledger.outputs.should_build }}
+  last_success_sha:
+    description: 'For check action: SHA of last successful build'
+    value: ${{ steps.ledger.outputs.last_success_sha }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run ledger operation
+      id: ledger
+      shell: bash
+      env:
+        LEDGER_ACTION: ${{ inputs.action }}
+        ARTIFACT_ID: ${{ inputs.artifact_id }}
+        S3_BUCKET: ${{ inputs.s3_bucket }}
+        LEDGER_PREFIX: ${{ inputs.ledger_prefix }}
+        SHA: ${{ inputs.sha }}
+        STATUS: ${{ inputs.status }}
+      run: |
+        set -euo pipefail
+        
+        # Source the ledger library
+        source "${{ github.action_path }}/../../lib/ledger.sh"
+        
+        sha="${SHA:-${GITHUB_SHA:-HEAD}}"
+        
+        if [[ "$LEDGER_ACTION" == "check" ]]; then
+          echo "Checking ledger for $ARTIFACT_ID..." >&2
+          ledger_check "$ARTIFACT_ID" "$sha" "$S3_BUCKET" "${LEDGER_PREFIX:-build-ledger/}"
+          
+          echo "should_build=$LEDGER_SHOULD_BUILD" >> "$GITHUB_OUTPUT"
+          echo "last_success_sha=$LEDGER_LAST_SUCCESS_SHA" >> "$GITHUB_OUTPUT"
+          
+          echo "should_build=$LEDGER_SHOULD_BUILD"
+          echo "last_success_sha=$LEDGER_LAST_SUCCESS_SHA"
+          
+        elif [[ "$LEDGER_ACTION" == "write" ]]; then
+          if [[ -z "$STATUS" ]]; then
+            echo "Error: status input is required for write action" >&2
+            exit 1
+          fi
+          
+          echo "Writing ledger for $ARTIFACT_ID (status: $STATUS)..." >&2
+          ledger_write "$ARTIFACT_ID" "$STATUS" "$sha" "$S3_BUCKET" "${LEDGER_PREFIX:-build-ledger/}"
+          
+          echo "Ledger updated successfully"
+          
+        else
+          echo "Error: action must be 'check' or 'write', got '$LEDGER_ACTION'" >&2
+          exit 1
+        fi
