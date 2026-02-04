@@ -23,6 +23,10 @@ inputs:
   force_build:
     description: 'Force rebuild regardless of checks'
     default: 'false'
+  pat:
+    description: 'Personal access token for checking out private submodules'
+    required: false
+    default: ''
 
 outputs:
   should_build:
@@ -52,6 +56,7 @@ runs:
         CHECK_PREVIOUS_RUN: ${{ inputs.check_previous_run }}
         JOB_PATTERN: ${{ inputs.job_pattern }}
         FORCE_BUILD: ${{ inputs.force_build }}
+        PAT: ${{ inputs.pat }}
       run: |
         # Run the build decision script
         ${{ github.action_path }}/build-decision.sh

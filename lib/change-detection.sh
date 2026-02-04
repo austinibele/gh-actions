@@ -5,10 +5,17 @@
 # Detects file changes between commits using git diff. Supports glob pattern
 # matching to filter changes relevant to specific artifacts.
 #
+# Submodule support: When a submodule changes, this script will checkout the
+# submodule and inspect the actual file changes within it, mapping them back
+# to full repository paths for pattern matching.
+#
 # Public functions:
 #   detect_changes <filter_patterns_json> [base_sha]
 #     → Sets: CHANGES_DETECTED ("true"|"false")
 #     → Sets: CHANGED_FILES (newline-separated list)
+#
+# Environment variables:
+#   PAT - Personal access token for private submodule access (optional)
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
@@ -49,6 +56,90 @@ _matches_patterns() {
   done
 
   return 1
+}
+
+# Internal: Check if a path could match any filter pattern (prefix check)
+_could_match_patterns() {
+  local submodule_path="$1"
+  shift
+  local patterns=("$@")
+
+  for pattern in "${patterns[@]}"; do
+    [[ -z "$pattern" ]] && continue
+    pattern="${pattern#\"}"
+    pattern="${pattern%\"}"
+
+    # Check if pattern starts with submodule path
+    if [[ "$pattern" == "$submodule_path/"* ]] || [[ "$pattern" == "$submodule_path/**" ]]; then
+      return 0
+    fi
+    # Check if pattern exactly matches submodule path
+    if [[ "$pattern" == "$submodule_path" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Internal: Get submodule paths from .gitmodules
+_get_submodule_paths() {
+  if [[ -f .gitmodules ]]; then
+    grep '^\s*path\s*=' .gitmodules | sed 's/.*=\s*//' | tr -d ' '
+  fi
+}
+
+# Internal: Configure git for private repo access
+_configure_git_for_submodules() {
+  if [[ -n "${PAT:-}" ]]; then
+    echo "Configuring git for submodule access..." >&2
+    git config --global url."https://${PAT}@github.com/".insteadOf "https://github.com/"
+  fi
+}
+
+# Internal: Get submodule commit SHAs from diff
+# Returns: "old_sha new_sha" or empty if not a submodule change
+_get_submodule_commits() {
+  local submodule_path="$1"
+  local base_commit="$2"
+  local head_commit="$3"
+
+  # Get the submodule commit at base
+  local old_sha
+  old_sha=$(git ls-tree "$base_commit" -- "$submodule_path" 2>/dev/null | awk '{print $3}' || echo "")
+
+  # Get the submodule commit at head
+  local new_sha
+  new_sha=$(git ls-tree "$head_commit" -- "$submodule_path" 2>/dev/null | awk '{print $3}' || echo "")
+
+  if [[ -n "$old_sha" ]] && [[ -n "$new_sha" ]] && [[ "$old_sha" != "$new_sha" ]]; then
+    echo "$old_sha $new_sha"
+  fi
+}
+
+# Internal: Get changed files within a submodule
+_get_submodule_changed_files() {
+  local submodule_path="$1"
+  local old_sha="$2"
+  local new_sha="$3"
+
+  echo "Checking changes in submodule '$submodule_path' ($old_sha..$new_sha)..." >&2
+
+  # Initialize/update just this submodule
+  git submodule update --init "$submodule_path" 2>/dev/null || {
+    echo "Warning: Failed to checkout submodule '$submodule_path'" >&2
+    return 1
+  }
+
+  # Get changed files within the submodule
+  local submodule_files
+  submodule_files=$(git -C "$submodule_path" diff --name-only "$old_sha" "$new_sha" 2>/dev/null || echo "")
+
+  if [[ -n "$submodule_files" ]]; then
+    # Prefix each file with the submodule path
+    echo "$submodule_files" | while read -r file; do
+      [[ -n "$file" ]] && echo "${submodule_path}/${file}"
+    done
+  fi
 }
 
 # Public: Detect file changes between commits and filter by patterns
@@ -103,8 +194,6 @@ detect_changes() {
     return 0
   fi
 
-  CHANGED_FILES="$changed_files"
-
   echo "Changed files:" >&2
   echo "$changed_files" | while read -r file; do
     [[ -n "$file" ]] && echo "  $file" >&2
@@ -132,6 +221,61 @@ detect_changes() {
     [[ -n "$pattern" ]] && patterns+=("$pattern")
   done <<< "$patterns_raw"
 
+  # Get list of submodules
+  local submodules
+  submodules=$(_get_submodule_paths)
+
+  # Build list of all changed files (including expanded submodule changes)
+  local all_changed_files="$changed_files"
+
+  # Check for submodule changes and expand them
+  if [[ -n "$submodules" ]]; then
+    while IFS= read -r submodule_path; do
+      [[ -z "$submodule_path" ]] && continue
+
+      # Check if this submodule is in the changed files list
+      if echo "$changed_files" | grep -qx "$submodule_path"; then
+        echo "Detected change in submodule: $submodule_path" >&2
+
+        # Check if any filter pattern could match files in this submodule
+        if _could_match_patterns "$submodule_path" "${patterns[@]}"; then
+          echo "Filter patterns may match files in submodule '$submodule_path', inspecting..." >&2
+
+          # Configure git for private submodule access
+          _configure_git_for_submodules
+
+          # Get old and new submodule commits
+          local commits
+          commits=$(_get_submodule_commits "$submodule_path" "$prev_commit" "$current_commit")
+
+          if [[ -n "$commits" ]]; then
+            local old_sha new_sha
+            old_sha=$(echo "$commits" | awk '{print $1}')
+            new_sha=$(echo "$commits" | awk '{print $2}')
+
+            # Get changed files within submodule
+            local submodule_files
+            submodule_files=$(_get_submodule_changed_files "$submodule_path" "$old_sha" "$new_sha" || echo "")
+
+            if [[ -n "$submodule_files" ]]; then
+              echo "Files changed in submodule '$submodule_path':" >&2
+              echo "$submodule_files" | while read -r file; do
+                [[ -n "$file" ]] && echo "  $file" >&2
+              done
+              # Add submodule files to the list (replacing the submodule path entry)
+              all_changed_files=$(echo "$all_changed_files" | grep -vx "$submodule_path" || true)
+              all_changed_files="${all_changed_files}"$'\n'"${submodule_files}"
+            fi
+          fi
+        else
+          echo "No filter patterns match submodule '$submodule_path', skipping inspection" >&2
+        fi
+      fi
+    done <<< "$submodules"
+  fi
+
+  CHANGED_FILES="$all_changed_files"
+
   # Check if any changed file matches the patterns
   while IFS= read -r changed_file; do
     [[ -z "$changed_file" ]] && continue
@@ -141,7 +285,7 @@ detect_changes() {
       export CHANGES_DETECTED CHANGED_FILES
       return 0
     fi
-  done <<< "$changed_files"
+  done <<< "$all_changed_files"
 
   echo "No matching changes detected" >&2
   export CHANGES_DETECTED CHANGED_FILES
