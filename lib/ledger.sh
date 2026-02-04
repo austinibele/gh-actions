@@ -5,13 +5,16 @@
 # Generic ledger system for tracking artifact build status in S3. Works with
 # any artifact type (Docker images, Lambda functions, static sites, etc.).
 #
+# IMPORTANT: Ledger files are environment-specific to prevent dev/prod conflicts.
+# The env parameter is REQUIRED to ensure correct isolation.
+#
 # Public functions:
-#   ledger_check <artifact_id> <sha> <bucket> [prefix]
+#   ledger_check <artifact_id> <sha> <bucket> <env> [prefix]
 #     → Sets: LEDGER_SHOULD_BUILD ("true"|"false")
 #     → Sets: LEDGER_LAST_SUCCESS_SHA (commit SHA or empty)
 #     → Sets: LEDGER_FILE_EXISTS ("true"|"false")
 #
-#   ledger_write <artifact_id> <status> <sha> <bucket> [prefix]
+#   ledger_write <artifact_id> <status> <sha> <bucket> <env> [prefix]
 #     → Writes status record to S3
 #     → status: "success" | "failure" | "building"
 # -----------------------------------------------------------------------------
@@ -20,8 +23,8 @@ set -euo pipefail
 # Internal: download ledger JSON to stdout
 # Returns 0 if object exists, 1 otherwise
 _ledger_fetch() {
-  local bucket="$1" artifact_id="$2" prefix="$3"
-  local key="${prefix}${artifact_id}.json"
+  local bucket="$1" artifact_id="$2" env="$3" prefix="$4"
+  local key="${prefix}${env}/${artifact_id}.json"
   local tmpfile
   tmpfile="$(mktemp)"
 
@@ -41,10 +44,16 @@ ledger_check() {
   local artifact_id="$1"
   local sha="$2"
   local bucket="${3:-${LEDGER_BUCKET:-}}"
-  local prefix="${4:-build-ledger/}"
+  local env="${4:-${ENV:-}}"
+  local prefix="${5:-build-ledger/}"
 
   if [[ -z "${bucket}" ]]; then
     echo "ledger_check: S3 bucket must be provided via arg or LEDGER_BUCKET env var" >&2
+    return 1
+  fi
+
+  if [[ -z "${env}" ]]; then
+    echo "ledger_check: env must be provided via arg or ENV env var" >&2
     return 1
   fi
 
@@ -54,7 +63,7 @@ ledger_check() {
   LEDGER_FILE_EXISTS="false"
 
   local json status last_success_sha
-  if ! json=$(_ledger_fetch "${bucket}" "${artifact_id}" "${prefix}"); then
+  if ! json=$(_ledger_fetch "${bucket}" "${artifact_id}" "${env}" "${prefix}"); then
     # Ledger file missing – need build
     export LEDGER_SHOULD_BUILD LEDGER_LAST_SUCCESS_SHA LEDGER_FILE_EXISTS
     return 0
@@ -87,14 +96,20 @@ ledger_write() {
   local status="$2"
   local sha="$3"
   local bucket="${4:-${LEDGER_BUCKET:-}}"
-  local prefix="${5:-build-ledger/}"
+  local env="${5:-${ENV:-}}"
+  local prefix="${6:-build-ledger/}"
 
   if [[ -z "${bucket}" ]]; then
     echo "ledger_write: S3 bucket must be provided via arg or LEDGER_BUCKET env var" >&2
     return 1
   fi
 
-  local key="${prefix}${artifact_id}.json"
+  if [[ -z "${env}" ]]; then
+    echo "ledger_write: env must be provided via arg or ENV env var" >&2
+    return 1
+  fi
+
+  local key="${prefix}${env}/${artifact_id}.json"
   local ts
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 

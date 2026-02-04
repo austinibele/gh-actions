@@ -11,6 +11,9 @@ inputs:
   s3_bucket:
     description: 'S3 bucket for ledger storage'
     required: true
+  env:
+    description: 'Environment name (dev/prod) - required for ledger path isolation'
+    required: true
   ledger_prefix:
     description: 'S3 key prefix for ledger files'
     default: 'build-ledger/'
@@ -52,6 +55,7 @@ runs:
         ARTIFACT_ID: ${{ inputs.artifact_id }}
         FILTER_PATTERNS: ${{ inputs.filter_patterns }}
         S3_BUCKET: ${{ inputs.s3_bucket }}
+        ENV: ${{ inputs.env }}
         LEDGER_PREFIX: ${{ inputs.ledger_prefix }}
         CHECK_PREVIOUS_RUN: ${{ inputs.check_previous_run }}
         JOB_PATTERN: ${{ inputs.job_pattern }}

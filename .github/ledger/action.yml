@@ -11,6 +11,9 @@ inputs:
   s3_bucket:
     description: 'S3 bucket for ledger storage'
     required: true
+  env:
+    description: 'Environment name (dev/prod) - required for ledger path isolation'
+    required: true
   ledger_prefix:
     description: 'S3 key prefix for ledger files'
     default: 'build-ledger/'
@@ -39,6 +42,7 @@ runs:
         LEDGER_ACTION: ${{ inputs.action }}
         ARTIFACT_ID: ${{ inputs.artifact_id }}
         S3_BUCKET: ${{ inputs.s3_bucket }}
+        ENV: ${{ inputs.env }}
         LEDGER_PREFIX: ${{ inputs.ledger_prefix }}
         SHA: ${{ inputs.sha }}
         STATUS: ${{ inputs.status }}
@@ -51,8 +55,8 @@ runs:
         sha="${SHA:-${GITHUB_SHA:-HEAD}}"
         
         if [[ "$LEDGER_ACTION" == "check" ]]; then
-          echo "Checking ledger for $ARTIFACT_ID..." >&2
-          ledger_check "$ARTIFACT_ID" "$sha" "$S3_BUCKET" "${LEDGER_PREFIX:-build-ledger/}"
+          echo "Checking ledger for $ARTIFACT_ID (env: $ENV)..." >&2
+          ledger_check "$ARTIFACT_ID" "$sha" "$S3_BUCKET" "$ENV" "${LEDGER_PREFIX:-build-ledger/}"
           
           echo "should_build=$LEDGER_SHOULD_BUILD" >> "$GITHUB_OUTPUT"
           echo "last_success_sha=$LEDGER_LAST_SUCCESS_SHA" >> "$GITHUB_OUTPUT"
@@ -66,8 +70,8 @@ runs:
             exit 1
           fi
           
-          echo "Writing ledger for $ARTIFACT_ID (status: $STATUS)..." >&2
-          ledger_write "$ARTIFACT_ID" "$STATUS" "$sha" "$S3_BUCKET" "${LEDGER_PREFIX:-build-ledger/}"
+          echo "Writing ledger for $ARTIFACT_ID (env: $ENV, status: $STATUS)..." >&2
+          ledger_write "$ARTIFACT_ID" "$STATUS" "$sha" "$S3_BUCKET" "$ENV" "${LEDGER_PREFIX:-build-ledger/}"
           
           echo "Ledger updated successfully"
           

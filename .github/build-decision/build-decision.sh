@@ -59,6 +59,12 @@ write_output_multiline() {
 main() {
   echo "=== Build Decision for ${ARTIFACT_ID} ===" >&2
 
+  # Validate required env
+  if [[ -z "${ENV:-}" ]]; then
+    echo "Error: ENV must be set for build decision" >&2
+    exit 1
+  fi
+
   # Handle force build
   if [[ "${FORCE_BUILD:-false}" == "true" || "${FORCE_BUILD:-0}" == "1" ]]; then
     echo "Force build enabled" >&2
@@ -71,7 +77,7 @@ main() {
 
   # Step 1: Check ledger status
   echo "Step 1: Checking ledger status..." >&2
-  ledger_check "$ARTIFACT_ID" "${GITHUB_SHA:-HEAD}" "$S3_BUCKET" "${LEDGER_PREFIX:-build-ledger/}"
+  ledger_check "$ARTIFACT_ID" "${GITHUB_SHA:-HEAD}" "$S3_BUCKET" "$ENV" "${LEDGER_PREFIX:-build-ledger/}"
 
   local last_success_sha="${LEDGER_LAST_SUCCESS_SHA:-}"
 

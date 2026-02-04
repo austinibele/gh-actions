@@ -21,7 +21,7 @@ Describe 'ledger.sh::ledger_check'
       stub_dir=$(mktemp -d)
       PATH="$stub_dir:$PATH"
       create_aws_stub "$stub_dir"
-      ledger_check "missing" "cafebabe" "dummy-bucket"
+      ledger_check "missing" "cafebabe" "dummy-bucket" "dev"
       echo "$LEDGER_SHOULD_BUILD"
     '
     The output should equal "true"
@@ -34,7 +34,7 @@ Describe 'ledger.sh::ledger_check'
       stub_dir=$(mktemp -d)
       PATH="$stub_dir:$PATH"
       create_aws_stub "$stub_dir"
-      ledger_check "failure" "cafebabe" "dummy-bucket"
+      ledger_check "failure" "cafebabe" "dummy-bucket" "dev"
       echo "$LEDGER_SHOULD_BUILD"
     '
     The output should equal "true"
@@ -47,7 +47,7 @@ Describe 'ledger.sh::ledger_check'
       stub_dir=$(mktemp -d)
       PATH="$stub_dir:$PATH"
       create_aws_stub "$stub_dir"
-      ledger_check "building" "cafebabe" "dummy-bucket"
+      ledger_check "building" "cafebabe" "dummy-bucket" "dev"
       echo "$LEDGER_SHOULD_BUILD"
     '
     The output should equal "true"
@@ -60,7 +60,7 @@ Describe 'ledger.sh::ledger_check'
       stub_dir=$(mktemp -d)
       PATH="$stub_dir:$PATH"
       create_aws_stub "$stub_dir"
-      ledger_check "oldsha" "cafebabe" "dummy-bucket"
+      ledger_check "oldsha" "cafebabe" "dummy-bucket" "dev"
       echo "$LEDGER_SHOULD_BUILD"
     '
     The output should equal "false"
@@ -73,7 +73,7 @@ Describe 'ledger.sh::ledger_check'
       stub_dir=$(mktemp -d)
       PATH="$stub_dir:$PATH"
       create_aws_stub "$stub_dir"
-      ledger_check "samesha" "cafebabe" "dummy-bucket"
+      ledger_check "samesha" "cafebabe" "dummy-bucket" "dev"
       echo "$LEDGER_SHOULD_BUILD"
     '
     The output should equal "false"
@@ -86,7 +86,7 @@ Describe 'ledger.sh::ledger_check'
       stub_dir=$(mktemp -d)
       PATH="$stub_dir:$PATH"
       create_aws_stub "$stub_dir"
-      ledger_check "oldsha" "cafebabe" "dummy-bucket"
+      ledger_check "oldsha" "cafebabe" "dummy-bucket" "dev"
       echo "$LEDGER_LAST_SUCCESS_SHA"
     '
     The output should equal "deadbeef"
@@ -99,7 +99,7 @@ Describe 'ledger.sh::ledger_check'
       stub_dir=$(mktemp -d)
       PATH="$stub_dir:$PATH"
       create_aws_stub "$stub_dir"
-      ledger_check "missing" "cafebabe" "dummy-bucket"
+      ledger_check "missing" "cafebabe" "dummy-bucket" "dev"
       echo "$LEDGER_FILE_EXISTS"
     '
     The output should equal "false"
@@ -112,7 +112,7 @@ Describe 'ledger.sh::ledger_check'
       stub_dir=$(mktemp -d)
       PATH="$stub_dir:$PATH"
       create_aws_stub "$stub_dir"
-      ledger_check "failure" "cafebabe" "dummy-bucket"
+      ledger_check "failure" "cafebabe" "dummy-bucket" "dev"
       echo "$LEDGER_FILE_EXISTS"
     '
     The output should equal "true"
@@ -125,7 +125,7 @@ Describe 'ledger.sh::ledger_check'
       stub_dir=$(mktemp -d)
       PATH="$stub_dir:$PATH"
       create_aws_stub "$stub_dir"
-      ledger_check "oldsha" "cafebabe" "dummy-bucket"
+      ledger_check "oldsha" "cafebabe" "dummy-bucket" "dev"
       echo "$LEDGER_FILE_EXISTS"
     '
     The output should equal "true"
@@ -135,13 +135,24 @@ Describe 'ledger.sh::ledger_check'
     When run bash -c '
       source "$SCRIPT_UNDER_TEST"
       unset LEDGER_BUCKET
-      ledger_check "test" "sha123" "" 2>&1
+      unset ENV
+      ledger_check "test" "sha123" "" "" 2>&1
     '
     The output should include "S3 bucket must be provided"
     The status should be failure
   End
 
-  It 'uses LEDGER_BUCKET env var when bucket arg not provided'
+  It 'returns error when env is not provided'
+    When run bash -c '
+      source "$SCRIPT_UNDER_TEST"
+      unset ENV
+      ledger_check "test" "sha123" "dummy-bucket" "" 2>&1
+    '
+    The output should include "env must be provided"
+    The status should be failure
+  End
+
+  It 'uses LEDGER_BUCKET and ENV env vars when args not provided'
     When run bash -c '
       source "$SCRIPT_UNDER_TEST"
       source "'"${SCRIPT_DIR}"'/../helpers/common.sh"
@@ -149,6 +160,7 @@ Describe 'ledger.sh::ledger_check'
       PATH="$stub_dir:$PATH"
       create_aws_stub "$stub_dir"
       export LEDGER_BUCKET="dummy-bucket"
+      export ENV="dev"
       ledger_check "samesha" "cafebabe"
       echo "$LEDGER_SHOULD_BUILD"
     '
@@ -166,7 +178,7 @@ Describe 'ledger.sh::ledger_write'
       stub_dir=$(mktemp -d)
       PATH="$stub_dir:$PATH"
       create_aws_stub "$stub_dir"
-      ledger_write "my-artifact" "success" "abc123" "dummy-bucket"
+      ledger_write "my-artifact" "success" "abc123" "dummy-bucket" "dev"
       echo "success"
     '
     The output should equal "success"
@@ -177,9 +189,20 @@ Describe 'ledger.sh::ledger_write'
     When run bash -c '
       source "$SCRIPT_UNDER_TEST"
       unset LEDGER_BUCKET
-      ledger_write "test" "success" "sha123" "" 2>&1
+      unset ENV
+      ledger_write "test" "success" "sha123" "" "" 2>&1
     '
     The output should include "S3 bucket must be provided"
+    The status should be failure
+  End
+
+  It 'returns error when env is not provided'
+    When run bash -c '
+      source "$SCRIPT_UNDER_TEST"
+      unset ENV
+      ledger_write "test" "success" "sha123" "dummy-bucket" "" 2>&1
+    '
+    The output should include "env must be provided"
     The status should be failure
   End
 End
