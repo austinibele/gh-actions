@@ -124,7 +124,7 @@ runs:
         done <<< "${NORMALIZED_CMD// && /$'\n'}"
         
         # Escape double quotes inside brackets for eval: ["foo"] -> [\"foo\"]
-        ESCAPED_CMD=$(echo "$NORMALIZED_CMD" | sed 's/\["\([^"]*\)"\]/[\\"\\1\\"]/g')
+        ESCAPED_CMD=$(echo "$NORMALIZED_CMD" | sed 's/\["\([^"]*\)"\]/[\\"\1\\"]/g')
         
         echo "Running: $NORMALIZED_CMD"
         eval "$ESCAPED_CMD"
