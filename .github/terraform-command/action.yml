@@ -113,15 +113,15 @@ runs:
         # Normalize quotes: convert single quotes to double quotes for terraform compatibility
         NORMALIZED_CMD="${TF_COMMAND//\'/\"}"
         
-        # Split on && and validate each command starts with terraform
-        IFS='&&' read -ra COMMANDS <<< "$NORMALIZED_CMD"
-        for cmd in "${COMMANDS[@]}"; do
+        # Split on " && " and validate each command starts with terraform
+        while IFS= read -r cmd; do
           trimmed=$(echo "$cmd" | xargs)
+          [[ -z "$trimmed" ]] && continue
           if [[ ! "$trimmed" =~ ^terraform[[:space:]] ]]; then
             echo "Error: Each command must start with 'terraform'. Invalid command: $trimmed"
             exit 1
           fi
-        done
+        done <<< "${NORMALIZED_CMD// && /$'\n'}"
         
         echo "Running: $NORMALIZED_CMD"
         eval "$NORMALIZED_CMD"
