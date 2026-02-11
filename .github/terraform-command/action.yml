@@ -1,0 +1,113 @@
+name: "Terraform Command"
+description: "Run an arbitrary Terraform command (import, state rm, taint, etc.)"
+inputs:
+  terraform_directory:
+    description: 'Directory that holds Terraform code'
+    required: true
+  terraform_version:
+    description: 'Terraform Version'
+    required: true
+  command:
+    description: 'Terraform command to run (e.g., "import aws_s3_bucket.example bucket-name" or "state rm module.foo")'
+    required: true
+  aws_access_key_id:
+    description: 'AWS Access Key ID'
+    required: true
+  aws_secret_access_key:
+    description: 'AWS Secret Access Key'
+    required: true
+  aws_region:
+    description: 'AWS Region'
+    required: true
+  tf_var_env:
+    description: 'Terraform environment (dev/prod)'
+    required: false
+  tf_vars_json:
+    description: 'JSON object mapping Terraform variable names to values'
+    required: false
+  backend_config_file:
+    description: 'Backend config file path relative to terraform_directory. If not provided, defaults to env/backend_s3_${env}.hcl'
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ inputs.terraform_version }}
+        terraform_wrapper: false
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ inputs.aws_access_key_id }}
+        aws-secret-access-key: ${{ inputs.aws_secret_access_key }}
+        aws-region: ${{ inputs.aws_region }}
+
+    - name: Resolve Environment
+      id: resolve-env
+      shell: bash
+      env:
+        TF_VAR_ENV_INPUT: ${{ inputs.tf_var_env }}
+        TF_VARS_JSON: ${{ inputs.tf_vars_json }}
+      run: |
+        set -Eeuo pipefail
+        ENV_NAME="${TF_VAR_ENV_INPUT}"
+        if [ -z "$ENV_NAME" ] && [ -n "${TF_VARS_JSON:-}" ]; then
+          ENV_NAME=$(echo "$TF_VARS_JSON" | jq -r '.env // empty')
+        fi
+        if [ -z "$ENV_NAME" ]; then
+          echo "Env not explicitly provided; defaulting to 'dev'"
+          ENV_NAME="dev"
+        fi
+        echo "TF_VAR_env=$ENV_NAME" >> "$GITHUB_ENV"
+        echo "env_name=$ENV_NAME" >> "$GITHUB_OUTPUT"
+        echo "Resolved environment: $ENV_NAME"
+
+    - name: Terraform Init
+      working-directory: ${{ inputs.terraform_directory }}
+      shell: bash
+      env:
+        BACKEND_CONFIG_FILE: ${{ inputs.backend_config_file }}
+      run: |
+        set -Eeuo pipefail
+        BACKEND_FILE="${BACKEND_CONFIG_FILE}"
+        if [ -z "$BACKEND_FILE" ]; then
+          BACKEND_FILE="env/backend_s3_${TF_VAR_env}.hcl"
+        fi
+        echo "Using backend config: $BACKEND_FILE"
+        terraform init -no-color --backend-config="$BACKEND_FILE"
+
+    - name: Export Core TF Vars
+      shell: bash
+      run: |
+        {
+          echo "TF_VAR_aws_access_key_id=${{ inputs.aws_access_key_id }}";
+          echo "TF_VAR_aws_secret_access_key=${{ inputs.aws_secret_access_key }}";
+          echo "TF_VAR_aws_region=${{ inputs.aws_region }}";
+        } >> "$GITHUB_ENV"
+
+    - name: Export TF Vars from JSON
+      shell: bash
+      env:
+        TF_VARS_JSON: ${{ inputs.tf_vars_json }}
+      run: |
+        set -Eeuo pipefail
+        if [ -n "${TF_VARS_JSON:-}" ]; then
+          echo "Exporting TF vars from tf_vars_json (keys only):"
+          echo "$TF_VARS_JSON" | jq -r 'keys[]' | sed 's/^/  - /'
+          echo "$TF_VARS_JSON" | jq -r 'to_entries[] | "TF_VAR_\(.key)=\(.value)"' >> "$GITHUB_ENV"
+        else
+          echo "No tf_vars_json provided"
+        fi
+
+    - name: Run Terraform Command
+      working-directory: ${{ inputs.terraform_directory }}
+      shell: bash
+      env:
+        TF_COMMAND: ${{ inputs.command }}
+      run: |
+        set -Eeuo pipefail
+        echo "Running: terraform $TF_COMMAND"
+        terraform $TF_COMMAND
