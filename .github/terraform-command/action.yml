@@ -8,7 +8,7 @@ inputs:
     description: 'Terraform Version'
     required: true
   command:
-    description: 'Terraform command to run (e.g., "import aws_s3_bucket.example bucket-name" or "state rm module.foo")'
+    description: 'Full terraform command(s) to run (e.g., "terraform import aws_s3_bucket.example bucket-name" or multiple with "terraform import ... && terraform import ...")'
     required: true
   aws_access_key_id:
     description: 'AWS Access Key ID'
@@ -109,5 +109,19 @@ runs:
         TF_COMMAND: ${{ inputs.command }}
       run: |
         set -Eeuo pipefail
-        echo "Running: terraform $TF_COMMAND"
-        terraform $TF_COMMAND
+        
+        # Normalize quotes: convert single quotes to double quotes for terraform compatibility
+        NORMALIZED_CMD="${TF_COMMAND//\'/\"}"
+        
+        # Split on && and validate each command starts with terraform
+        IFS='&&' read -ra COMMANDS <<< "$NORMALIZED_CMD"
+        for cmd in "${COMMANDS[@]}"; do
+          trimmed=$(echo "$cmd" | xargs)
+          if [[ ! "$trimmed" =~ ^terraform[[:space:]] ]]; then
+            echo "Error: Each command must start with 'terraform'. Invalid command: $trimmed"
+            exit 1
+          fi
+        done
+        
+        echo "Running: $NORMALIZED_CMD"
+        eval "$NORMALIZED_CMD"
