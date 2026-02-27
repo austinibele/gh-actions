@@ -183,6 +183,17 @@ detect_changes() {
   local current_commit="${GITHUB_SHA:-$(git rev-parse HEAD)}"
   echo "Comparing commits: $prev_commit...$current_commit" >&2
 
+  # Ensure the base commit is reachable (shallow clones may not have it)
+  if ! git cat-file -e "${prev_commit}^{commit}" 2>/dev/null; then
+    echo "Base commit $prev_commit not in local history, fetching..." >&2
+    git fetch --depth=1 origin "$prev_commit" 2>/dev/null || {
+      echo "Warning: Could not fetch base commit $prev_commit, assuming changes" >&2
+      CHANGES_DETECTED="true"
+      export CHANGES_DETECTED CHANGED_FILES
+      return 0
+    }
+  fi
+
   # Get changed files using git diff
   local changed_files
   changed_files=$(git diff --name-only "$prev_commit" "$current_commit" 2>/dev/null || echo "")
