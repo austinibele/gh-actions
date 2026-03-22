@@ -66,14 +66,14 @@ Describe 'change-detection.sh::detect_changes'
       source "'"${SCRIPT_DIR}"'/../helpers/common.sh"
       stub_dir=$(mktemp -d)
       PATH="$stub_dir:$PATH"
-      create_git_stub "$stub_dir" "myvisa/frontend/.prettierignore"
+      create_git_stub "$stub_dir" "apps/myvisa/frontend/.prettierignore"
       export GITHUB_EVENT_BEFORE=abc GITHUB_SHA=def
       detect_changes "[\"myvisa/backend/**\"]"
       echo "$CHANGES_DETECTED"
     '
     The output should equal "false"
     The stderr should include "Detecting changes..."
-    The stderr should include "  myvisa/frontend/.prettierignore"
+    The stderr should include "  apps/myvisa/frontend/.prettierignore"
     The stderr should include "No matching changes detected"
   End
 
@@ -115,7 +115,7 @@ Describe 'change-detection.sh::detect_changes'
       PATH="$stub_dir:$PATH"
       create_git_stub "$stub_dir" "common/utils.ts"
       export GITHUB_EVENT_BEFORE=abc GITHUB_SHA=def
-      detect_changes "[\"crm/backend/**\", \"common/**\", \"package.json\"]"
+      detect_changes "[\"apps/crm/backend/**\", \"common/**\", \"package.json\"]"
       echo "$CHANGES_DETECTED"
     '
     The output should equal "true"

@@ -16,7 +16,7 @@ Artifact-agnostic build decision logic using S3 ledger, change detection, and pr
   id: decision
   with:
     artifact_id: backend
-    filter_patterns: '["crm/backend/**", "common/**", "package.json"]'
+    filter_patterns: '["apps/crm/backend/**", "common/**", "package.json"]'
     s3_bucket: ${{ env.S3_TERRAFORM_ARTIFACTS_BUCKET_NAME }}
 
 - name: Build and push image
@@ -72,7 +72,7 @@ jobs:
         id: decision
         with:
           artifact_id: backend
-          filter_patterns: '["crm/backend/**", "common/**"]'
+          filter_patterns: '["apps/crm/backend/**", "common/**"]'
           s3_bucket: my-bucket
 
       - name: Build image
@@ -126,5 +126,5 @@ The `filter_patterns` input accepts a JSON array of glob patterns:
 
 Example:
 ```yaml
-filter_patterns: '["crm/backend/**", "common/**", "package.json", "pnpm-lock.yaml"]'
+filter_patterns: '["apps/crm/backend/**", "common/**", "package.json", "pnpm-lock.yaml"]'
 ```
