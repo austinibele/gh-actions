@@ -12,9 +12,12 @@ inputs:
   PAT: 
     description: 'GitHub token for authentication'
     required: true
-  pr_id:
-    description: 'Pull request ID or commit SHA'
+  plan_id:
+    description: 'Stable id for the plan object (must match plan step, e.g. commit SHA)'
     required: true
+  plan_key_prefix:
+    description: 'Optional path prefix (must match the plan step)'
+    required: false
   s3_bucket_name:
     description: 'S3 bucket name for plan artifacts'
     required: true
@@ -81,17 +84,21 @@ runs:
         TF_VAR_env: ${{ inputs.tf_var_env }}
         PLAN_KEY: ${{ inputs.plan_key }}
         S3_KEY_DATE: ${{ inputs.s3_key_date }}
-        PR_ID: ${{ inputs.pr_id }}
+        PLAN_ID: ${{ inputs.plan_id }}
+        PLAN_KEY_PREFIX: ${{ inputs.plan_key_prefix }}
       run: |
         set -Eeuo pipefail
         if [ -n "$PLAN_KEY" ]; then
           S3_KEY="$PLAN_KEY"
         else
-          KEY="$PR_ID"
+          KEY="$PLAN_ID"
           if [ -n "$TF_VAR_env" ]; then
             KEY="$KEY-$TF_VAR_env"
           fi
           KEY="$KEY-tfplan"
+          if [ -n "${PLAN_KEY_PREFIX:-}" ]; then
+            KEY="$PLAN_KEY_PREFIX/$KEY"
+          fi
           if [ -n "$S3_KEY_DATE" ]; then
             S3_KEY="$S3_KEY_DATE/$KEY"
           else
