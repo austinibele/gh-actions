@@ -245,7 +245,14 @@ detect_changes() {
       [[ -z "$submodule_path" ]] && continue
 
       # Check if this submodule is in the changed files list
-      if echo "$changed_files" | grep -qx "$submodule_path"; then
+      local submodule_changed="false"
+      while IFS= read -r changed_file || [[ -n "$changed_file" ]]; do
+        if [[ "$changed_file" == "$submodule_path" ]]; then
+          submodule_changed="true"
+          break
+        fi
+      done <<< "$changed_files"
+      if [[ "$submodule_changed" == "true" ]]; then
         echo "Detected change in submodule: $submodule_path" >&2
 
         # Check if any filter pattern could match files in this submodule
