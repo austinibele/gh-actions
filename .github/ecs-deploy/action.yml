@@ -1,0 +1,39 @@
+name: 'Deploy ECS services'
+description: 'Reads Terraform ECS deploy metadata, registers task definitions when images changed, and updates ECS services.'
+inputs:
+  terraform-working-directory:
+    description: 'Directory containing the Terraform stack (terraform init/output run here).'
+    required: true
+  terraform-init-command:
+    description: 'Full terraform init command (e.g. terraform init -input=false -backend-config="...").'
+    required: true
+  deploy-metadata-output:
+    description: 'Terraform output name for ECS deploy metadata JSON.'
+    required: true
+  service-groups-json:
+    description: 'JSON object mapping service group keys to { service_ids: string[] }.'
+    required: true
+  image-uris-json:
+    description: 'JSON object of service id -> ECR image URI.'
+    required: true
+  rebuilt-service-ids-json:
+    description: 'JSON array of service ids rebuilt in this workflow run.'
+    required: true
+  env-or-infra-changed:
+    description: 'Whether deploy/env or infra paths changed (true/false string from matrix job).'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Deploy ECS services
+      shell: bash
+      working-directory: ${{ inputs.terraform-working-directory }}
+      env:
+        TERRAFORM_INIT_COMMAND: ${{ inputs.terraform-init-command }}
+        DEPLOY_METADATA_OUTPUT: ${{ inputs.deploy-metadata-output }}
+        SERVICE_GROUPS_JSON: ${{ inputs.service-groups-json }}
+        IMAGE_URIS_JSON: ${{ inputs.image-uris-json }}
+        REBUILT_SERVICE_IDS_JSON: ${{ inputs.rebuilt-service-ids-json }}
+        ENV_OR_INFRA_CHANGED: ${{ inputs.env-or-infra-changed }}
+      run: bash "${{ github.action_path }}/ecs-deploy.sh"
