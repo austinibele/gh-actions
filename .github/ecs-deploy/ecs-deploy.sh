@@ -9,11 +9,11 @@ set -euo pipefail
 : "${SERVICE_GROUPS_JSON:?SERVICE_GROUPS_JSON is required}"
 
 bash -c "$TERRAFORM_INIT_COMMAND"
-terraform output -json > tf-output.json 2>/dev/null || printf '{}' > tf-output.json
+terraform output -json > tf-output.json || printf '{}' > tf-output.json
 deploy_metadata="$(jq -c --arg output "$DEPLOY_METADATA_OUTPUT" '.[$output].value // empty' tf-output.json)"
-if [[ -z "$deploy_metadata" ]]; then
-  echo "::error::Missing Terraform output: $DEPLOY_METADATA_OUTPUT"
-  exit 1
+if [[ -z "$deploy_metadata" || "$deploy_metadata" == "null" ]]; then
+  echo "Terraform output '$DEPLOY_METADATA_OUTPUT' is null or absent — no ECS services configured for this environment. Skipping deployment."
+  exit 0
 fi
 cluster_name="$(echo "$deploy_metadata" | jq -r '.cluster_name // empty')"
 if [[ -z "$cluster_name" ]]; then
@@ -53,22 +53,11 @@ deploy_service_group() {
     exit 1
   fi
 
-  if [[ "$group_has_rebuilt" != "true" ]]; then
-    echo "Deploying $service_key via $service_name -> $task_definition_arn"
-    aws ecs update-service --cluster "$cluster_name" --service "$service_name" --task-definition "$task_definition_arn"
-    aws ecs wait services-stable --cluster "$cluster_name" --services "$service_name"
-    return 0
-  fi
-
   aws ecs describe-task-definition --task-definition "$task_definition_arn" --query taskDefinition --output json > "task-definition-${service_key}-base.json"
   container_image_map='{}'
 
   while IFS= read -r service_id; do
     [[ -z "$service_id" ]] && continue
-    if ! echo "$REBUILT_SERVICE_IDS_JSON" | jq -e --arg id "$service_id" 'index($id) != null' >/dev/null; then
-      continue
-    fi
-
     container_name="$(echo "$service_metadata" | jq -r --arg id "$service_id" '.container_names[$id] // empty')"
     image_uri="$(echo "$IMAGE_URIS_JSON" | jq -r --arg id "$service_id" '.[$id] // empty')"
 
@@ -77,7 +66,7 @@ deploy_service_group() {
       exit 1
     fi
     if [[ -z "$image_uri" ]]; then
-      echo "::error::Missing rebuilt image URI for $service_id"
+      echo "::error::Missing image URI for $service_id in service group $service_key"
       exit 1
     fi
 
