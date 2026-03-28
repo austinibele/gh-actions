@@ -77,7 +77,7 @@ deploy_service_group() {
     .containerDefinitions |= map(
       if (($image_map[.name] // "") != "") then .image = $image_map[.name] else . end
     )
-    | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
+    | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)
   ' "task-definition-${service_key}-base.json" > "task-definition-${service_key}.json"
 
   new_task_definition_arn="$(aws ecs register-task-definition --cli-input-json "file://task-definition-${service_key}.json" --query taskDefinition.taskDefinitionArn --output text)"
