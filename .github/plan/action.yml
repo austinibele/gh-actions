@@ -97,7 +97,7 @@ runs:
           BACKEND_FILE="env/backend_s3_${TF_VAR_env}.hcl"
         fi
         echo "Using backend config: $BACKEND_FILE"
-        terraform init -no-color --backend-config="$BACKEND_FILE"
+        terraform init -upgrade -no-color --backend-config="$BACKEND_FILE"
 
     - name: Export Core TF Vars
       shell: bash

@@ -76,7 +76,7 @@ runs:
           fi
         fi
         echo "Using backend config: $BACKEND_FILE"
-        terraform init -no-color --backend-config="$BACKEND_FILE"
+        terraform init -upgrade -no-color --backend-config="$BACKEND_FILE"
 
     - name: Download Plan from S3
       shell: bash
