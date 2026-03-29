@@ -5,7 +5,7 @@ inputs:
     description: 'Directory containing the Terraform stack (terraform init/output run here).'
     required: true
   terraform-init-command:
-    description: 'Full terraform init command (e.g. terraform init -input=false -backend-config="...").'
+    description: 'Full terraform init command (e.g. terraform init -upgrade -input=false -backend-config="...").'
     required: true
   deploy-metadata-output:
     description: 'Terraform output name for ECS deploy metadata JSON.'
