@@ -9,9 +9,6 @@ inputs:
   terraform_version: 
     description: 'Terraform Version'
     required: true
-  PAT: 
-    description: 'GitHub token for authentication'
-    required: true
   plan_id:
     description: 'Stable id for the plan object (must match plan step, e.g. commit SHA)'
     required: true
