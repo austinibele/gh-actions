@@ -21,12 +21,16 @@ inputs:
   s3_bucket_name:
     description: 'S3 bucket name for plan artifacts'
     required: true
+  role_to_assume:
+    description: 'IAM role ARN for OIDC (leave empty for static keys)'
+    required: false
+    default: ""
   aws_access_key_id:
-    description: 'AWS Access Key ID'
-    required: true
+    description: 'AWS Access Key ID (ignored when role_to_assume is set)'
+    required: false
   aws_secret_access_key:
-    description: 'AWS Secret Access Key'
-    required: true
+    description: 'AWS Secret Access Key (ignored when role_to_assume is set)'
+    required: false
   aws_region:
     description: 'AWS Region'
     required: true
@@ -52,7 +56,15 @@ runs:
         terraform_version: ${{ inputs.terraform_version }}
         terraform_wrapper: false
 
-    - name: Configure AWS Credentials
+    - name: Configure AWS Credentials (OIDC)
+      if: ${{ inputs.role_to_assume != '' }}
+      uses: aws-actions/configure-aws-credentials@v6
+      with:
+        role-to-assume: ${{ inputs.role_to_assume }}
+        aws-region: ${{ inputs.aws_region }}
+
+    - name: Configure AWS Credentials (Static Keys)
+      if: ${{ inputs.role_to_assume == '' }}
       uses: aws-actions/configure-aws-credentials@v6
       with:
         aws-access-key-id: ${{ inputs.aws_access_key_id }}
@@ -114,8 +126,8 @@ runs:
       shell: bash
       env:
         TF_VAR_env: ${{ inputs.tf_var_env }}
-        TF_VAR_aws_access_key_id: ${{ inputs.aws_access_key_id }}
-        TF_VAR_aws_secret_access_key: ${{ inputs.aws_secret_access_key }}
+        TF_VAR_aws_access_key_id: ${{ inputs.role_to_assume == '' && inputs.aws_access_key_id || '' }}
+        TF_VAR_aws_secret_access_key: ${{ inputs.role_to_assume == '' && inputs.aws_secret_access_key || '' }}
         TF_VAR_aws_region: ${{ inputs.aws_region }}
       run: |
         set -Eeuo pipefail

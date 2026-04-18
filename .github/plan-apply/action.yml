@@ -10,12 +10,16 @@ inputs:
   PAT:
     description: "GitHub token for auth"
     required: true
+  role_to_assume:
+    description: "IAM role ARN for OIDC (leave empty for static keys)"
+    required: false
+    default: ""
   aws_access_key_id:
-    description: "AWS Access Key ID"
-    required: true
+    description: "AWS Access Key ID (ignored when role_to_assume is set)"
+    required: false
   aws_secret_access_key:
-    description: "AWS Secret Access Key"
-    required: true
+    description: "AWS Secret Access Key (ignored when role_to_assume is set)"
+    required: false
   aws_region:
     description: "AWS Region"
     required: true
@@ -42,7 +46,15 @@ runs:
         terraform_version: ${{ inputs.terraform_version }}
         terraform_wrapper: false
 
-    - name: Configure AWS Credentials
+    - name: Configure AWS Credentials (OIDC)
+      if: ${{ inputs.role_to_assume != '' }}
+      uses: aws-actions/configure-aws-credentials@v6
+      with:
+        role-to-assume: ${{ inputs.role_to_assume }}
+        aws-region: ${{ inputs.aws_region }}
+
+    - name: Configure AWS Credentials (Static Keys)
+      if: ${{ inputs.role_to_assume == '' }}
       uses: aws-actions/configure-aws-credentials@v6
       with:
         aws-access-key-id: ${{ inputs.aws_access_key_id }}
@@ -83,6 +95,7 @@ runs:
         terraform init -upgrade -no-color --backend-config="$BACKEND_FILE"
 
     - name: Export Core TF Vars
+      if: ${{ inputs.role_to_assume == '' }}
       shell: bash
       run: |
         {
