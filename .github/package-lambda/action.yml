@@ -71,14 +71,20 @@ runs:
       run: git submodule update --init --recursive
 
     - name: Filter Changed Files
-      uses: dorny/paths-filter@v3
       id: filter
-      with:
-        base: ${{ github.ref }}
-        ref: ${{ github.ref }}
-        filters: |
-          source_changes:
-            ${{ inputs.filter_pattern }}
+      shell: bash
+      env:
+        FILTER_PATTERN: ${{ inputs.filter_pattern }}
+      run: |
+        set -euo pipefail
+        source "$GITHUB_ACTION_PATH/../../lib/change-detection.sh"
+        if echo "$FILTER_PATTERN" | jq -e 'type=="array"' >/dev/null 2>&1; then
+          patterns_json="$FILTER_PATTERN"
+        else
+          patterns_json=$(jq -cn --arg p "$FILTER_PATTERN" '[$p]')
+        fi
+        detect_changes "$patterns_json" "${GITHUB_EVENT_BEFORE:-}"
+        echo "source_changes=${CHANGES_DETECTED}" >> "$GITHUB_OUTPUT"
 
     - name: Check Previous Run Status
       id: check-status
