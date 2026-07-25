@@ -9,7 +9,7 @@ set -euo pipefail
 : "${SERVICE_GROUPS_JSON:?SERVICE_GROUPS_JSON is required}"
 
 bash -c "$TERRAFORM_INIT_COMMAND"
-terraform output -json > tf-output.json || printf '{}' > tf-output.json
+terraform output -json > tf-output.json
 deploy_metadata="$(jq -c --arg output "$DEPLOY_METADATA_OUTPUT" '.[$output].value // empty' tf-output.json)"
 if [[ -z "$deploy_metadata" || "$deploy_metadata" == "null" ]]; then
   echo "Terraform output '$DEPLOY_METADATA_OUTPUT' is null or absent — no ECS services configured for this environment. Skipping deployment."
