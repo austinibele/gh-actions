@@ -23,10 +23,19 @@ inputs:
     description: 'Whether deploy/env or infra paths changed (true/false string from matrix job).'
     required: true
 
+outputs:
+  metadata_configured:
+    description: 'false only when terraform output is an empty object (greenfield / stack not applied).'
+    value: ${{ steps.deploy.outputs.metadata_configured }}
+  deploy_skipped:
+    description: 'true when deployment was skipped because the stack has not been applied yet.'
+    value: ${{ steps.deploy.outputs.deploy_skipped }}
+
 runs:
   using: composite
   steps:
     - name: Deploy ECS services
+      id: deploy
       shell: bash
       working-directory: ${{ inputs.terraform-working-directory }}
       env:

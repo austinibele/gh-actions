@@ -8,13 +8,37 @@ set -euo pipefail
 : "${ENV_OR_INFRA_CHANGED:?ENV_OR_INFRA_CHANGED is required}"
 : "${SERVICE_GROUPS_JSON:?SERVICE_GROUPS_JSON is required}"
 
+write_deploy_outputs() {
+  local metadata_configured="$1"
+  local deploy_skipped="$2"
+  {
+    echo "metadata_configured=${metadata_configured}"
+    echo "deploy_skipped=${deploy_skipped}"
+  } >> "$GITHUB_OUTPUT"
+}
+
 bash -c "$TERRAFORM_INIT_COMMAND"
 terraform output -json > tf-output.json
-deploy_metadata="$(jq -c --arg output "$DEPLOY_METADATA_OUTPUT" '.[$output].value // empty' tf-output.json)"
-if [[ -z "$deploy_metadata" || "$deploy_metadata" == "null" ]]; then
-  echo "Terraform output '$DEPLOY_METADATA_OUTPUT' is null or absent — no ECS services configured for this environment. Skipping deployment."
+
+if ! jq -e . tf-output.json >/dev/null 2>&1; then
+  echo "::error::Malformed Terraform output: tf-output.json is not valid JSON"
+  exit 1
+fi
+
+if [[ "$(jq 'keys | length' tf-output.json)" -eq 0 ]]; then
+  echo "::notice::Terraform stack has not been applied yet so no deploy metadata exists. Skipping deployment."
+  write_deploy_outputs "false" "true"
   exit 0
 fi
+
+if ! jq -e --arg output "$DEPLOY_METADATA_OUTPUT" 'has($output) and (.[$output].value != null)' tf-output.json >/dev/null; then
+  echo "::error::Terraform output '$DEPLOY_METADATA_OUTPUT' is absent or null while other outputs exist (misconfigured state)"
+  exit 1
+fi
+
+deploy_metadata="$(jq -c --arg output "$DEPLOY_METADATA_OUTPUT" '.[$output].value' tf-output.json)"
+write_deploy_outputs "true" "false"
+
 cluster_name="$(echo "$deploy_metadata" | jq -r '.cluster_name // empty')"
 if [[ -z "$cluster_name" ]]; then
   echo "::error::Deploy metadata is missing cluster_name"

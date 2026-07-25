@@ -205,4 +205,130 @@ Describe 'ledger.sh::ledger_write'
     The output should include "env must be provided"
     The status should be failure
   End
+
+  Describe 'last_success preservation'
+    It 'building write preserves prior last_success_sha and last_success_ts'
+      When run bash -c '
+        source "$SCRIPT_UNDER_TEST"
+        stub_dir=$(mktemp -d)
+        upload_log=$(mktemp)
+        PATH="$stub_dir:$PATH"
+        cat >"${stub_dir}/aws" <<EOS
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="\$1"; shift
+subcmd="\$1"; shift
+src="\$1"; dst="\$2"
+if [[ "\$src" == s3://* ]]; then
+  case "\$src" in
+    *with-history.json)
+      cat <<EOF >"\$dst"
+{"status":"success","last_success_sha":"deadbeef","last_success_ts":"2024-01-01T00:00:00Z"}
+EOF
+      exit 0;;
+    *)
+      exit 1;;
+  esac
+else
+  cat > "${upload_log}"
+fi
+EOS
+        chmod +x "${stub_dir}/aws"
+        cat >"${stub_dir}/date" <<EOF
+#!/usr/bin/env bash
+echo "2024-06-01T12:00:00Z"
+EOF
+        chmod +x "${stub_dir}/date"
+        ledger_write "with-history" "building" "newsha" "dummy-bucket" "dev"
+        cat "$upload_log"
+      '
+      The status should be success
+      The output should include '"status": "building"'
+      The output should include '"last_success_sha": "deadbeef"'
+      The output should include '"last_success_ts": "2024-01-01T00:00:00Z"'
+    End
+
+    It 'failure write preserves prior last_success_sha and last_success_ts'
+      When run bash -c '
+        source "$SCRIPT_UNDER_TEST"
+        stub_dir=$(mktemp -d)
+        upload_log=$(mktemp)
+        PATH="$stub_dir:$PATH"
+        cat >"${stub_dir}/aws" <<EOS
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="\$1"; shift
+subcmd="\$1"; shift
+src="\$1"; dst="\$2"
+if [[ "\$src" == s3://* ]]; then
+  case "\$src" in
+    *with-history.json)
+      cat <<EOF >"\$dst"
+{"status":"success","last_success_sha":"deadbeef","last_success_ts":"2024-01-01T00:00:00Z"}
+EOF
+      exit 0;;
+    *)
+      exit 1;;
+  esac
+else
+  cat > "${upload_log}"
+fi
+EOS
+        chmod +x "${stub_dir}/aws"
+        cat >"${stub_dir}/date" <<EOF
+#!/usr/bin/env bash
+echo "2024-06-01T12:00:00Z"
+EOF
+        chmod +x "${stub_dir}/date"
+        ledger_write "with-history" "failure" "newsha" "dummy-bucket" "dev"
+        cat "$upload_log"
+      '
+      The status should be success
+      The output should include '"status": "failure"'
+      The output should include '"last_success_sha": "deadbeef"'
+      The output should include '"last_success_ts": "2024-01-01T00:00:00Z"'
+    End
+
+    It 'success write overwrites last_success_sha and last_success_ts'
+      When run bash -c '
+        source "$SCRIPT_UNDER_TEST"
+        stub_dir=$(mktemp -d)
+        upload_log=$(mktemp)
+        PATH="$stub_dir:$PATH"
+        cat >"${stub_dir}/aws" <<EOS
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="\$1"; shift
+subcmd="\$1"; shift
+src="\$1"; dst="\$2"
+if [[ "\$src" == s3://* ]]; then
+  case "\$src" in
+    *with-history.json)
+      cat <<EOF >"\$dst"
+{"status":"success","last_success_sha":"deadbeef","last_success_ts":"2024-01-01T00:00:00Z"}
+EOF
+      exit 0;;
+    *)
+      exit 1;;
+  esac
+else
+  cat > "${upload_log}"
+fi
+EOS
+        chmod +x "${stub_dir}/aws"
+        cat >"${stub_dir}/date" <<EOF
+#!/usr/bin/env bash
+echo "2024-06-01T12:00:00Z"
+EOF
+        chmod +x "${stub_dir}/date"
+        ledger_write "with-history" "success" "newsha" "dummy-bucket" "dev"
+        cat "$upload_log"
+      '
+      The status should be success
+      The output should include '"status": "success"'
+      The output should include '"last_success_sha": "newsha"'
+      The output should include '"last_success_ts": "2024-06-01T12:00:00Z"'
+      The output should not include '"last_success_sha": "deadbeef"'
+    End
+  End
 End

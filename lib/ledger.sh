@@ -17,6 +17,7 @@
 #   ledger_write <artifact_id> <status> <sha> <bucket> <env> [prefix]
 #     → Writes status record to S3
 #     → status: "success" | "failure" | "building"
+#     → building/failure preserve prior last_success_sha/ts when present
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
@@ -36,6 +37,25 @@ _ledger_fetch() {
     rm -f "${tmpfile}"
     return 1
   fi
+}
+
+# Internal: extract prior last_success_* fields from existing ledger JSON.
+# Missing/unparseable objects yield empty strings (never fail the write).
+_ledger_prior_success_fields() {
+  local bucket="$1" artifact_id="$2" env="$3" prefix="$4"
+  local existing
+  if ! existing="$(_ledger_fetch "${bucket}" "${artifact_id}" "${env}" "${prefix}")"; then
+    echo ""
+    echo ""
+    return 0
+  fi
+  if ! echo "${existing}" | jq -e . >/dev/null 2>&1; then
+    echo ""
+    echo ""
+    return 0
+  fi
+  echo "$(echo "${existing}" | jq -r '.last_success_sha // empty')"
+  echo "$(echo "${existing}" | jq -r '.last_success_ts // empty')"
 }
 
 # Public: Check ledger state and decide if artifact should be rebuilt
@@ -91,6 +111,7 @@ ledger_check() {
 
 # Public: Write status record to S3 ledger
 # status: "success" | "failure" | "building"
+# building/failure writes preserve prior last_success_sha/ts when present.
 ledger_write() {
   local artifact_id="$1"
   local status="$2"
@@ -113,17 +134,32 @@ ledger_write() {
   local ts
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+  local last_success_sha="" last_success_ts=""
+  if [[ "${status}" == "success" ]]; then
+    last_success_sha="${sha}"
+    last_success_ts="${ts}"
+  else
+    local prior_sha prior_ts
+    {
+      read -r prior_sha
+      read -r prior_ts
+    } < <(_ledger_prior_success_fields "${bucket}" "${artifact_id}" "${env}" "${prefix}")
+    last_success_sha="${prior_sha}"
+    last_success_ts="${prior_ts}"
+  fi
+
+  local success_fields=""
+  if [[ -n "${last_success_sha}" ]]; then
+    success_fields=$(printf ',\n  "last_success_sha": "%s",\n  "last_success_ts": "%s"' "${last_success_sha}" "${last_success_ts}")
+  fi
+
   local json_content
   json_content=$(cat <<EOF
 {
   "artifact_id": "${artifact_id}",
   "status": "${status}",
   "last_attempt_sha": "${sha}",
-  "last_attempt_ts": "${ts}"$(
-    if [[ "${status}" == "success" ]]; then
-      printf ',\n  "last_success_sha": "%s",\n  "last_success_ts": "%s"' "${sha}" "${ts}"
-    fi
-  )
+  "last_attempt_ts": "${ts}"${success_fields}
 }
 EOF
 )
