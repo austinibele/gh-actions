@@ -220,6 +220,56 @@ Describe 'ecs-deploy.sh metadata classification'
     The output should include "absent or null"
   End
 
+  It 'skips when deploy-metadata is absent and the workflow explicitly allows it'
+    stub_dir=$(mktemp -d)
+    PATH="$stub_dir:$PATH"
+    workdir=$(mktemp -d)
+    gh_out=$(mktemp)
+    _make_terraform_stub "$stub_dir" "ok-missing-meta"
+
+    When run env \
+      PATH="$stub_dir:$PATH" \
+      TERRAFORM_INIT_COMMAND="true" \
+      DEPLOY_METADATA_OUTPUT="crm_ecs_deploy_metadata" \
+      IMAGE_URIS_JSON='{}' \
+      REBUILT_SERVICE_IDS_JSON='[]' \
+      ENV_OR_INFRA_CHANGED="false" \
+      SERVICE_GROUPS_JSON='{}' \
+      SKIP_WHEN_METADATA_ABSENT="true" \
+      GITHUB_OUTPUT="$gh_out" \
+      bash -c 'cd "'"$workdir"'" && bash "$SCRIPT_UNDER_TEST" && echo "OUT<<$(cat "'"$gh_out"'")>>"'
+
+    The status should be success
+    The output should include "Skipping deployment as configured"
+    The output should include "metadata_configured=false"
+    The output should include "deploy_skipped=true"
+  End
+
+  It 'skips when deploy-metadata is null and the workflow explicitly allows it'
+    stub_dir=$(mktemp -d)
+    PATH="$stub_dir:$PATH"
+    workdir=$(mktemp -d)
+    gh_out=$(mktemp)
+    _make_terraform_stub "$stub_dir" "ok-null-meta"
+
+    When run env \
+      PATH="$stub_dir:$PATH" \
+      TERRAFORM_INIT_COMMAND="true" \
+      DEPLOY_METADATA_OUTPUT="crm_ecs_deploy_metadata" \
+      IMAGE_URIS_JSON='{}' \
+      REBUILT_SERVICE_IDS_JSON='[]' \
+      ENV_OR_INFRA_CHANGED="false" \
+      SERVICE_GROUPS_JSON='{}' \
+      SKIP_WHEN_METADATA_ABSENT="true" \
+      GITHUB_OUTPUT="$gh_out" \
+      bash -c 'cd "'"$workdir"'" && bash "$SCRIPT_UNDER_TEST" && echo "OUT<<$(cat "'"$gh_out"'")>>"'
+
+    The status should be success
+    The output should include "Skipping deployment as configured"
+    The output should include "metadata_configured=false"
+    The output should include "deploy_skipped=true"
+  End
+
   It 'fails when metadata is present but cluster_name is missing'
     stub_dir=$(mktemp -d)
     PATH="$stub_dir:$PATH"

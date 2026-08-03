@@ -22,6 +22,10 @@ inputs:
   env-or-infra-changed:
     description: 'Whether deploy/env or infra paths changed (true/false string from matrix job).'
     required: true
+  skip-when-metadata-absent:
+    description: 'When true, treat an absent or null deploy metadata output as an intentional no-op.'
+    required: false
+    default: 'false'
 
 outputs:
   metadata_configured:
@@ -45,4 +49,5 @@ runs:
         IMAGE_URIS_JSON: ${{ inputs.image-uris-json }}
         REBUILT_SERVICE_IDS_JSON: ${{ inputs.rebuilt-service-ids-json }}
         ENV_OR_INFRA_CHANGED: ${{ inputs.env-or-infra-changed }}
+        SKIP_WHEN_METADATA_ABSENT: ${{ inputs.skip-when-metadata-absent }}
       run: bash "${{ github.action_path }}/ecs-deploy.sh"

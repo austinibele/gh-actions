@@ -7,6 +7,7 @@ set -euo pipefail
 : "${REBUILT_SERVICE_IDS_JSON:?REBUILT_SERVICE_IDS_JSON is required}"
 : "${ENV_OR_INFRA_CHANGED:?ENV_OR_INFRA_CHANGED is required}"
 : "${SERVICE_GROUPS_JSON:?SERVICE_GROUPS_JSON is required}"
+SKIP_WHEN_METADATA_ABSENT="${SKIP_WHEN_METADATA_ABSENT:-false}"
 
 write_deploy_outputs() {
   local metadata_configured="$1"
@@ -32,6 +33,11 @@ if [[ "$(jq 'keys | length' tf-output.json)" -eq 0 ]]; then
 fi
 
 if ! jq -e --arg output "$DEPLOY_METADATA_OUTPUT" 'has($output) and (.[$output].value != null)' tf-output.json >/dev/null; then
+  if [[ "$SKIP_WHEN_METADATA_ABSENT" == "true" ]]; then
+    echo "::notice::Terraform output '$DEPLOY_METADATA_OUTPUT' is absent or null. Skipping deployment as configured."
+    write_deploy_outputs "false" "true"
+    exit 0
+  fi
   echo "::error::Terraform output '$DEPLOY_METADATA_OUTPUT' is absent or null while other outputs exist (misconfigured state)"
   exit 1
 fi
