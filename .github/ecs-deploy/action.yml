@@ -26,6 +26,10 @@ inputs:
     description: 'When true, treat an absent or null deploy metadata output as an intentional no-op.'
     required: false
     default: 'false'
+  repository-tag:
+    description: 'Optional Repository tag value for newly registered ECS task-definition revisions.'
+    required: false
+    default: ''
 
 outputs:
   metadata_configured:
@@ -50,4 +54,5 @@ runs:
         REBUILT_SERVICE_IDS_JSON: ${{ inputs.rebuilt-service-ids-json }}
         ENV_OR_INFRA_CHANGED: ${{ inputs.env-or-infra-changed }}
         SKIP_WHEN_METADATA_ABSENT: ${{ inputs.skip-when-metadata-absent }}
+        REPOSITORY_TAG: ${{ inputs.repository-tag }}
       run: bash "${{ github.action_path }}/ecs-deploy.sh"

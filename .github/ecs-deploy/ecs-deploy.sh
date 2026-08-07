@@ -8,6 +8,7 @@ set -euo pipefail
 : "${ENV_OR_INFRA_CHANGED:?ENV_OR_INFRA_CHANGED is required}"
 : "${SERVICE_GROUPS_JSON:?SERVICE_GROUPS_JSON is required}"
 SKIP_WHEN_METADATA_ABSENT="${SKIP_WHEN_METADATA_ABSENT:-false}"
+REPOSITORY_TAG="${REPOSITORY_TAG:-}"
 
 write_deploy_outputs() {
   local metadata_configured="$1"
@@ -110,7 +111,17 @@ deploy_service_group() {
     | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)
   ' "task-definition-${service_key}-base.json" > "task-definition-${service_key}.json"
 
-  new_task_definition_arn="$(aws ecs register-task-definition --cli-input-json "file://task-definition-${service_key}.json" --query taskDefinition.taskDefinitionArn --output text)"
+  local -a register_task_definition_args
+  register_task_definition_args=(
+    ecs register-task-definition
+    --cli-input-json "file://task-definition-${service_key}.json"
+    --query taskDefinition.taskDefinitionArn
+    --output text
+  )
+  if [[ -n "$REPOSITORY_TAG" ]]; then
+    register_task_definition_args+=(--tags "key=Repository,value=$REPOSITORY_TAG")
+  fi
+  new_task_definition_arn="$(aws "${register_task_definition_args[@]}")"
   echo "Deploying $service_key via $service_name -> $new_task_definition_arn"
   aws ecs update-service --cluster "$cluster_name" --service "$service_name" --task-definition "$new_task_definition_arn"
   aws ecs wait services-stable --cluster "$cluster_name" --services "$service_name"

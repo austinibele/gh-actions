@@ -323,6 +323,47 @@ EOF
     The stderr should include "AWS_CALLED"
   End
 
+  It 'tags newly registered task definitions with the configured Repository value'
+    stub_dir=$(mktemp -d)
+    PATH="$stub_dir:$PATH"
+    workdir=$(mktemp -d)
+    gh_out=$(mktemp)
+    _make_terraform_stub "$stub_dir" "ok-populated"
+    cat >"${stub_dir}/aws" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "AWS_CALLED $*" >&2
+case "$1 $2" in
+  "ecs describe-task-definition")
+    cat <<'JSON'
+{"family":"crm-backend","containerDefinitions":[{"name":"backend","image":"old-uri"}]}
+JSON
+    ;;
+  "ecs register-task-definition")
+    printf '%s\n' 'arn:aws:ecs:us-east-1:123:task-definition/crm-backend:2'
+    ;;
+esac
+EOF
+    chmod +x "${stub_dir}/aws"
+
+    When run env \
+      PATH="$stub_dir:$PATH" \
+      TERRAFORM_INIT_COMMAND="true" \
+      DEPLOY_METADATA_OUTPUT="crm_ecs_deploy_metadata" \
+      IMAGE_URIS_JSON='{"backend":"new-uri"}' \
+      REBUILT_SERVICE_IDS_JSON='["backend"]' \
+      ENV_OR_INFRA_CHANGED="true" \
+      SERVICE_GROUPS_JSON='{"backend":{"service_ids":["backend"]}}' \
+      REPOSITORY_TAG="vectorfabric-ui" \
+      GITHUB_OUTPUT="$gh_out" \
+      bash -c 'cd "'"$workdir"'" && bash "$SCRIPT_UNDER_TEST"'
+
+    The status should be success
+    The output should include "Deploying backend"
+    The stderr should include "AWS_CALLED ecs register-task-definition"
+    The stderr should include "--tags key=Repository,value=vectorfabric-ui"
+  End
+
   It 'skips a requested service group absent from metadata.services and continues (no hard fail)'
     stub_dir=$(mktemp -d)
     PATH="$stub_dir:$PATH"
