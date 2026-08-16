@@ -81,6 +81,63 @@ EOF
   chmod +x "${stub_dir}/terraform"
 }
 
+_make_waiter_aws_stub() {
+  local stub_dir="$1"
+
+  cat >"${stub_dir}/aws" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$1 $2" in
+  "ecs describe-task-definition")
+    cat <<'JSON'
+{"family":"crm-backend","containerDefinitions":[{"name":"backend","image":"old-uri"}]}
+JSON
+    ;;
+  "ecs register-task-definition")
+    printf '%s\n' 'arn:aws:ecs:us-east-1:123:task-definition/crm-backend:2'
+    ;;
+  "ecs update-service")
+    printf '%s\n' '{}'
+    ;;
+  "ecs describe-services")
+    poll_count="$(cat "$AWS_POLL_STATE")"
+    poll_count="$((poll_count + 1))"
+    printf '%s\n' "$poll_count" >"$AWS_POLL_STATE"
+    if [[ "$AWS_POLL_MODE" == "recover" && "$poll_count" -ge 2 ]]; then
+      printf '%s\n' '{"failures":[],"services":[{"desiredCount":1,"runningCount":1,"pendingCount":0,"deployments":[{"status":"PRIMARY"}],"events":[]}]}'
+    else
+      printf '%s\n' '{"failures":[],"services":[{"desiredCount":1,"runningCount":0,"pendingCount":1,"deployments":[{"status":"PRIMARY"},{"status":"ACTIVE"}],"events":[{"message":"service-events"}]}]}'
+    fi
+    ;;
+esac
+EOF
+  chmod +x "${stub_dir}/aws"
+}
+
+_make_waiter_time_stubs() {
+  local stub_dir="$1"
+
+  cat >"${stub_dir}/date" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+time_count="$(cat "$AWS_TIME_STATE")"
+time_count="$((time_count + 1))"
+printf '%s\n' "$time_count" >"$AWS_TIME_STATE"
+if [[ "$AWS_TIME_MODE" == "expire" && "$time_count" -ge 2 ]]; then
+  printf '%s\n' '2201'
+else
+  printf '%s\n' "$((999 + time_count))"
+fi
+EOF
+  chmod +x "${stub_dir}/date"
+
+  cat >"${stub_dir}/sleep" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "${stub_dir}/sleep"
+}
+
 Describe 'ecs-deploy.sh metadata classification'
   It 'skips with notice when terraform output is empty object {}'
     stub_dir=$(mktemp -d)
@@ -342,6 +399,9 @@ JSON
   "ecs register-task-definition")
     printf '%s\n' 'arn:aws:ecs:us-east-1:123:task-definition/crm-backend:2'
     ;;
+  "ecs describe-services")
+    printf '%s\n' '{"failures":[],"services":[{"desiredCount":1,"runningCount":1,"deployments":[{"status":"PRIMARY"}]}]}'
+    ;;
 esac
 EOF
     chmod +x "${stub_dir}/aws"
@@ -360,6 +420,7 @@ EOF
 
     The status should be success
     The output should include "Deploying backend"
+    The output should include "Waiting up to 20 minute(s)"
     The stderr should include "AWS_CALLED ecs register-task-definition"
     The stderr should include "--tags key=Repository,value=vectorfabric-ui"
   End
@@ -393,5 +454,75 @@ EOF
     The output should include "metadata_configured=true"
     The output should include "deploy_skipped=false"
     The stderr should not include "AWS_SHOULD_NOT_RUN"
+  End
+
+  It 'keeps polling until the ECS service stabilizes within the configured minute timeout'
+    stub_dir=$(mktemp -d)
+    PATH="$stub_dir:$PATH"
+    workdir=$(mktemp -d)
+    gh_out=$(mktemp)
+    poll_state=$(mktemp)
+    time_state=$(mktemp)
+    printf '%s\n' '0' >"$poll_state"
+    printf '%s\n' '0' >"$time_state"
+    _make_terraform_stub "$stub_dir" "ok-populated"
+    _make_waiter_aws_stub "$stub_dir"
+    _make_waiter_time_stubs "$stub_dir"
+
+    When run env \
+      PATH="$stub_dir:$PATH" \
+      TERRAFORM_INIT_COMMAND="true" \
+      DEPLOY_METADATA_OUTPUT="crm_ecs_deploy_metadata" \
+      IMAGE_URIS_JSON='{"backend":"new-uri"}' \
+      REBUILT_SERVICE_IDS_JSON='["backend"]' \
+      ENV_OR_INFRA_CHANGED="true" \
+      SERVICE_GROUPS_JSON='{"backend":{"service_ids":["backend"]}}' \
+      SERVICES_STABLE_TIMEOUT_MINUTES="20" \
+      AWS_POLL_MODE="recover" \
+      AWS_POLL_STATE="$poll_state" \
+      AWS_TIME_MODE="advance" \
+      AWS_TIME_STATE="$time_state" \
+      GITHUB_OUTPUT="$gh_out" \
+      bash -c 'cd "'"$workdir"'" && bash "$SCRIPT_UNDER_TEST"'
+
+    The status should be success
+    The output should include "Waiting up to 20 minute(s)"
+    The output should include "polling every 15 seconds"
+    The output should include "is stable"
+  End
+
+  It 'prints ECS service diagnostics when the minute timeout expires'
+    stub_dir=$(mktemp -d)
+    PATH="$stub_dir:$PATH"
+    workdir=$(mktemp -d)
+    gh_out=$(mktemp)
+    poll_state=$(mktemp)
+    time_state=$(mktemp)
+    printf '%s\n' '0' >"$poll_state"
+    printf '%s\n' '0' >"$time_state"
+    _make_terraform_stub "$stub_dir" "ok-populated"
+    _make_waiter_aws_stub "$stub_dir"
+    _make_waiter_time_stubs "$stub_dir"
+
+    When run env \
+      PATH="$stub_dir:$PATH" \
+      TERRAFORM_INIT_COMMAND="true" \
+      DEPLOY_METADATA_OUTPUT="crm_ecs_deploy_metadata" \
+      IMAGE_URIS_JSON='{"backend":"new-uri"}' \
+      REBUILT_SERVICE_IDS_JSON='["backend"]' \
+      ENV_OR_INFRA_CHANGED="true" \
+      SERVICE_GROUPS_JSON='{"backend":{"service_ids":["backend"]}}' \
+      SERVICES_STABLE_TIMEOUT_MINUTES="20" \
+      AWS_POLL_MODE="fail" \
+      AWS_POLL_STATE="$poll_state" \
+      AWS_TIME_MODE="expire" \
+      AWS_TIME_STATE="$time_state" \
+      GITHUB_OUTPUT="$gh_out" \
+      bash -c 'cd "'"$workdir"'" && bash "$SCRIPT_UNDER_TEST"'
+
+    The status should be failure
+    The output should include "did not stabilize within 20 minute(s)"
+    The output should include "ECS service stability diagnostics"
+    The output should include "service-events"
   End
 End

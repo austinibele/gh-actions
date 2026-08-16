@@ -9,6 +9,17 @@ set -euo pipefail
 : "${SERVICE_GROUPS_JSON:?SERVICE_GROUPS_JSON is required}"
 SKIP_WHEN_METADATA_ABSENT="${SKIP_WHEN_METADATA_ABSENT:-false}"
 REPOSITORY_TAG="${REPOSITORY_TAG:-}"
+SERVICES_STABLE_TIMEOUT_MINUTES="${SERVICES_STABLE_TIMEOUT_MINUTES:-20}"
+SERVICES_STABLE_POLL_INTERVAL_SECONDS="${SERVICES_STABLE_POLL_INTERVAL_SECONDS:-15}"
+
+if ! [[ "$SERVICES_STABLE_TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]]; then
+  echo "::error::SERVICES_STABLE_TIMEOUT_MINUTES must be a positive integer"
+  exit 1
+fi
+if ! [[ "$SERVICES_STABLE_POLL_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "::error::SERVICES_STABLE_POLL_INTERVAL_SECONDS must be a positive integer"
+  exit 1
+fi
 
 write_deploy_outputs() {
   local metadata_configured="$1"
@@ -17,6 +28,62 @@ write_deploy_outputs() {
     echo "metadata_configured=${metadata_configured}"
     echo "deploy_skipped=${deploy_skipped}"
   } >> "$GITHUB_OUTPUT"
+}
+
+log_service_stability_diagnostics() {
+  local cluster_name="$1"
+  local service_name="$2"
+
+  echo "::group::ECS service stability diagnostics for ${service_name}"
+  aws ecs describe-services \
+    --cluster "$cluster_name" \
+    --services "$service_name" \
+    --query 'services[0].{status:status,desiredCount:desiredCount,runningCount:runningCount,pendingCount:pendingCount,deployments:deployments[*].{status:status,rolloutState:rolloutState,rolloutStateReason:rolloutStateReason,taskDefinition:taskDefinition,desiredCount:desiredCount,runningCount:runningCount,pendingCount:pendingCount,failedTasks:failedTasks,createdAt:createdAt,updatedAt:updatedAt},events:events[0:15].{createdAt:createdAt,message:message}}' \
+    --output json || true
+  echo "::endgroup::"
+}
+
+wait_for_service_stability() {
+  local cluster_name="$1"
+  local service_name="$2"
+  local deadline_epoch now_epoch remaining_seconds sleep_seconds service_snapshot describe_status
+
+  deadline_epoch="$(($(date +%s) + SERVICES_STABLE_TIMEOUT_MINUTES * 60))"
+  echo "Waiting up to ${SERVICES_STABLE_TIMEOUT_MINUTES} minute(s) for ${service_name} to stabilize (polling every ${SERVICES_STABLE_POLL_INTERVAL_SECONDS} seconds)"
+
+  while true; do
+    if service_snapshot="$(aws ecs describe-services --cluster "$cluster_name" --services "$service_name" --output json)"; then
+      :
+    else
+      describe_status=$?
+      echo "::error::Unable to read ECS service stability (aws status ${describe_status})"
+      log_service_stability_diagnostics "$cluster_name" "$service_name"
+      return "$describe_status"
+    fi
+
+    if jq -e '
+      (.failures | length) == 0 and
+      (.services | length) > 0 and
+      all(.services[]; ((.deployments | length) == 1 and .runningCount == .desiredCount))
+    ' <<<"$service_snapshot" >/dev/null; then
+      echo "ECS service ${service_name} is stable"
+      return 0
+    fi
+
+    now_epoch="$(date +%s)"
+    if ((now_epoch >= deadline_epoch)); then
+      echo "::error::ECS service did not stabilize within ${SERVICES_STABLE_TIMEOUT_MINUTES} minute(s)"
+      log_service_stability_diagnostics "$cluster_name" "$service_name"
+      return 1
+    fi
+
+    remaining_seconds="$((deadline_epoch - now_epoch))"
+    sleep_seconds="$SERVICES_STABLE_POLL_INTERVAL_SECONDS"
+    if ((sleep_seconds > remaining_seconds)); then
+      sleep_seconds="$remaining_seconds"
+    fi
+    sleep "$sleep_seconds"
+  done
 }
 
 bash -c "$TERRAFORM_INIT_COMMAND"
@@ -124,7 +191,7 @@ deploy_service_group() {
   new_task_definition_arn="$(aws "${register_task_definition_args[@]}")"
   echo "Deploying $service_key via $service_name -> $new_task_definition_arn"
   aws ecs update-service --cluster "$cluster_name" --service "$service_name" --task-definition "$new_task_definition_arn"
-  aws ecs wait services-stable --cluster "$cluster_name" --services "$service_name"
+  wait_for_service_stability "$cluster_name" "$service_name"
 }
 
 while IFS= read -r service_group; do
