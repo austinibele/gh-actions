@@ -1,5 +1,0 @@
-{
-  "workflow_runs": [
-    { "id": 100, "head_branch": "feature-foo" }
-  ]
-} 

@@ -1,11 +1,11 @@
 name: 'Package Lambda'
-description: 'Packages a Lambda function and uploads it to S3'
+description: 'Packages a Lambda function and uploads it to S3, skipping via the S3 build ledger when unchanged'
 inputs:
   s3_bucket_name:
-    description: 'S3 bucket name'
+    description: 'S3 zip-bucket name (also stores build-ledger/<env>/<key_prefix>.json)'
     required: true
   key_prefix:
-    description: 'Prefix for the S3 key (e.g., "slack-error-notifier")'
+    description: 'Prefix for the S3 zip key and ledger artifact_id (e.g., "slack-error-notifier")'
     required: true
   python_version:
     description: 'Python version to use when installing dependencies (e.g., "3.12")'
@@ -19,8 +19,16 @@ inputs:
     required: false
     default: '[]'
   filter_pattern:
-    description: 'JSON array of patterns to check for changed files'
+    description: 'JSON array of glob patterns, or a single pattern string, to check for changed files'
     required: true
+  force_build:
+    description: 'Force a rebuild (skip ledger/change checks). Also honored when the workflow env FORCE_BUILD is true.'
+    required: false
+    default: 'false'
+  ledger_prefix:
+    description: 'S3 key prefix for ledger files on the zip bucket'
+    required: false
+    default: 'build-ledger/'
   role_to_assume:
     description: 'IAM role ARN for OIDC (leave empty for static keys)'
     required: false
@@ -46,8 +54,11 @@ inputs:
 
 outputs:
   s3_key:
-    description: "The S3 object key of the uploaded Lambda package"
-    value: ${{ steps.package-or-use.outputs.s3_key }}
+    description: "The S3 object key of the uploaded or reused Lambda package"
+    value: ${{ steps.package.outputs.s3_key || steps.reuse.outputs.s3_key }}
+  reason:
+    description: "Decision reason: forced | ledger_missing | ledger_failed | source_changed | no_changes"
+    value: ${{ steps.decision.outputs.reason }}
 
 runs:
   using: "composite"
@@ -70,40 +81,6 @@ runs:
       shell: bash
       run: git submodule update --init --recursive
 
-    - name: Filter Changed Files
-      id: filter
-      shell: bash
-      env:
-        FILTER_PATTERN: ${{ inputs.filter_pattern }}
-      run: |
-        set -euo pipefail
-        source "$GITHUB_ACTION_PATH/../../lib/change-detection.sh"
-        if echo "$FILTER_PATTERN" | jq -e 'type=="array"' >/dev/null 2>&1; then
-          patterns_json="$FILTER_PATTERN"
-        else
-          patterns_json=$(jq -cn --arg p "$FILTER_PATTERN" '[$p]')
-        fi
-        detect_changes "$patterns_json" "${GITHUB_EVENT_BEFORE:-}"
-        echo "source_changes=${CHANGES_DETECTED}" >> "$GITHUB_OUTPUT"
-
-    - name: Check Previous Run Status
-      id: check-status
-      shell: bash
-      env:
-        GH_TOKEN: ${{ inputs.github_token }}
-      run: |
-        set -Eeuo pipefail
-        # Use helper script to determine if the previous run failed. Any failure here should fail fast.
-        if [ ! -f "$GITHUB_ACTION_PATH/check-previous-run.sh" ]; then
-          echo "Missing helper: $GITHUB_ACTION_PATH/check-previous-run.sh" >&2
-          exit 1
-        fi
-        bash "$GITHUB_ACTION_PATH/check-previous-run.sh" \
-          --repo "${{ github.repository }}" \
-          --branch "${{ github.ref_name }}" \
-          --run-id "${{ github.run_id }}" \
-          --key-prefix "${{ inputs.key_prefix }}" >> $GITHUB_OUTPUT
-
     - name: Configure AWS credentials (OIDC)
       if: ${{ inputs.role_to_assume != '' }}
       uses: aws-actions/configure-aws-credentials@v6
@@ -119,50 +96,68 @@ runs:
         aws-secret-access-key: ${{ inputs.aws_secret_access_key }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Check for Existing Package
-      id: check-package
+    - name: Decide skip or rebuild
+      id: decision
       shell: bash
+      env:
+        ARTIFACT_ID: ${{ inputs.key_prefix }}
+        FILTER_PATTERNS: ${{ inputs.filter_pattern }}
+        S3_BUCKET: ${{ inputs.s3_bucket_name }}
+        ENV: ${{ env.ENV }}
+        LEDGER_PREFIX: ${{ inputs.ledger_prefix }}
+        FORCE_BUILD: ${{ inputs.force_build == 'true' || env.FORCE_BUILD == 'true' }}
+        GITHUB_SHA: ${{ github.sha }}
+        PAT: ${{ inputs.pat }}
       run: |
-        set -Eeuo pipefail
-        # Determine environment tag and S3 prefix using helper script
+        set -euo pipefail
+        bash "$GITHUB_ACTION_PATH/decide.sh" >> "$GITHUB_OUTPUT"
+
+    - name: Verify reuse package
+      id: reuse
+      if: steps.decision.outputs.should_build != 'true'
+      shell: bash
+      env:
+        LAST_SUCCESS_SHA: ${{ steps.decision.outputs.last_success_sha }}
+        KEY_PREFIX: ${{ inputs.key_prefix }}
+        S3_BUCKET: ${{ inputs.s3_bucket_name }}
+        BRANCH: ${{ github.ref_name }}
+      run: |
+        set -euo pipefail
+        if [ -z "${LAST_SUCCESS_SHA:-}" ]; then
+          echo "No last_success_sha; cannot reuse a zip" >&2
+          echo "hit=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
         if [ ! -f "$GITHUB_ACTION_PATH/determine-env-and-key.sh" ]; then
           echo "Missing helper: $GITHUB_ACTION_PATH/determine-env-and-key.sh" >&2
           exit 1
         fi
-        eval "$(bash "$GITHUB_ACTION_PATH/determine-env-and-key.sh" --branch "${{ github.ref_name }}" --key-prefix "${{ inputs.key_prefix }}" --sha "${{ github.sha }}")"
-        if [ -z "${s3_prefix:-}" ]; then
-          echo "Failed to compute s3_prefix" >&2
+        eval "$(bash "$GITHUB_ACTION_PATH/determine-env-and-key.sh" --branch "$BRANCH" --key-prefix "$KEY_PREFIX" --sha "$LAST_SUCCESS_SHA")"
+        if [ -z "${s3_key:-}" ]; then
+          echo "Failed to compute reuse s3_key" >&2
           exit 1
         fi
-        # List objects in S3 with the given prefix
-        LATEST_PACKAGE=$(aws s3api list-objects-v2 \
-          --bucket ${{ inputs.s3_bucket_name }} \
-          --prefix "$s3_prefix" \
-          --query "sort_by(Contents, &LastModified)[-1].Key" \
-          --output text || echo "")
-          
-        if [ "$LATEST_PACKAGE" != "None" ] && [ -n "$LATEST_PACKAGE" ]; then
-          echo "has_existing_package=true" >> $GITHUB_OUTPUT
-          echo "latest_package_key=$LATEST_PACKAGE" >> $GITHUB_OUTPUT
+        if aws s3api head-object --bucket "$S3_BUCKET" --key "$s3_key" >/dev/null 2>&1; then
+          echo "Reusing existing Lambda package $s3_key" >&2
+          echo "s3_key=$s3_key" >> "$GITHUB_OUTPUT"
+          echo "hit=true" >> "$GITHUB_OUTPUT"
         else
-          echo "has_existing_package=false" >> $GITHUB_OUTPUT
+          echo "Reuse key $s3_key is missing; will package" >&2
+          echo "hit=false" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Setup Python
       uses: actions/setup-python@v4
-      if: |
-        steps.filter.outputs.source_changes == 'true' || 
-        steps.check-package.outputs.has_existing_package == 'false' || 
-        steps.check-status.outputs.previous_failed == 'true'
+      if: steps.decision.outputs.should_build == 'true' || steps.reuse.outputs.hit != 'true'
       with:
         python-version: ${{ inputs.python_version }}
 
-    - name: Package or Use Existing Lambda
-      id: package-or-use
+    - name: Package Lambda
+      id: package
+      if: steps.decision.outputs.should_build == 'true' || steps.reuse.outputs.hit != 'true'
       shell: bash
       run: |
         set -Eeuo pipefail
-        # Compute env tag and S3 key using helper script
         if [ ! -f "$GITHUB_ACTION_PATH/determine-env-and-key.sh" ]; then
           echo "Missing helper: $GITHUB_ACTION_PATH/determine-env-and-key.sh" >&2
           exit 1
@@ -174,50 +169,48 @@ runs:
           exit 1
         fi
         S3_URI="s3://${{ inputs.s3_bucket_name }}/$S3_KEY"
-        
-        if [[ "${{ steps.filter.outputs.source_changes }}" == "true" ]] || \
-           [[ "${{ steps.check-package.outputs.has_existing_package }}" == "false" ]] || \
-           [[ "${{ steps.check-status.outputs.previous_failed }}" == "true" ]]; then
-          echo "Building new Lambda package..."
-          
-          # Create a temporary directory for packaging
-          TEMP_DIR=$(mktemp -d)
-          
-          # Export build environment variables (if any) using helper script
-          source "$GITHUB_ACTION_PATH/export-build-env.sh" --json "${{ inputs.build_env }}"
-          
-          # Copy Lambda code to the temp directory
-          cp -r ${{ inputs.build_directory }}/* $TEMP_DIR/
-          
-          # Navigate to the build directory
-          cd $TEMP_DIR
-          
-          # Create ZIP package (Add any build steps needed here)
-          if [ -f "package.json" ]; then
-            # For Node.js projects
-            npm install --production
-          elif [ -f "requirements.txt" ]; then
-            # For Python projects
-            echo "Installing Python dependencies with Python ${{ inputs.python_version }}..."
-            python -m pip install --upgrade pip
-            python -m pip install -r requirements.txt -t .
-          fi
-          
-          # Create the ZIP file
-          zip -r lambda_package.zip ./* -x "*.git*" "*__pycache__*" "*.pytest_cache*" "*.venv*"
-          
-          # Upload to S3
-          aws s3 cp lambda_package.zip $S3_URI
-          
-          # Clean up
-          rm -rf $TEMP_DIR
-          
-          echo "s3_key=$S3_KEY" >> $GITHUB_OUTPUT
-        else
-          echo "Using existing Lambda package..."
-          if [ -z "${{ steps.check-package.outputs.latest_package_key }}" ] || [ "${{ steps.check-package.outputs.latest_package_key }}" = "None" ]; then
-            echo "No existing Lambda package found for prefix '$s3_prefix'" >&2
-            exit 1
-          fi
-          echo "s3_key=${{ steps.check-package.outputs.latest_package_key }}" >> $GITHUB_OUTPUT
-        fi 
+
+        echo "Building new Lambda package..."
+
+        TEMP_DIR=$(mktemp -d)
+
+        source "$GITHUB_ACTION_PATH/export-build-env.sh" --json "${{ inputs.build_env }}"
+
+        cp -r ${{ inputs.build_directory }}/* $TEMP_DIR/
+
+        cd $TEMP_DIR
+
+        if [ -f "package.json" ]; then
+          npm install --production
+        elif [ -f "requirements.txt" ]; then
+          echo "Installing Python dependencies with Python ${{ inputs.python_version }}..."
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -t .
+        fi
+
+        zip -r lambda_package.zip ./* -x "*.git*" "*__pycache__*" "*.pytest_cache*" "*.venv*"
+
+        aws s3 cp lambda_package.zip $S3_URI
+
+        rm -rf $TEMP_DIR
+
+        echo "s3_key=$S3_KEY" >> $GITHUB_OUTPUT
+        echo "built=true" >> $GITHUB_OUTPUT
+
+    - name: Update build ledger
+      if: ${{ always() && steps.decision.outcome == 'success' && (steps.decision.outputs.should_build == 'true' || steps.reuse.outputs.hit != 'true') }}
+      shell: bash
+      env:
+        ARTIFACT_ID: ${{ inputs.key_prefix }}
+        S3_BUCKET: ${{ inputs.s3_bucket_name }}
+        ENV: ${{ env.ENV }}
+        LEDGER_PREFIX: ${{ inputs.ledger_prefix }}
+        PACKAGE_OUTCOME: ${{ steps.package.outcome }}
+      run: |
+        set -euo pipefail
+        source "$GITHUB_ACTION_PATH/../../lib/ledger.sh"
+        status="failure"
+        if [[ "${PACKAGE_OUTCOME}" == "success" ]]; then
+          status="success"
+        fi
+        ledger_write "$ARTIFACT_ID" "$status" "$GITHUB_SHA" "$S3_BUCKET" "$ENV" "${LEDGER_PREFIX:-build-ledger/}"
