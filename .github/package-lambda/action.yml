@@ -22,7 +22,7 @@ inputs:
     description: 'JSON array of glob patterns, or a single pattern string, to check for changed files'
     required: true
   force_build:
-    description: 'Force a rebuild (skip ledger/change checks). Also honored when the workflow env FORCE_BUILD is true.'
+    description: 'Force a rebuild (skip ledger/change checks). Callers should pass the workflow FORCE_BUILD env as this input.'
     required: false
     default: 'false'
   ledger_prefix:
@@ -39,9 +39,6 @@ inputs:
   aws_secret_access_key:
     description: 'AWS Secret Access Key (ignored when role_to_assume is set)'
     required: false
-  github_token:
-    description: 'GitHub token with permissions to read workflow runs'
-    required: true
   pat:
     description: 'Personal Access Token for Git operations'
     required: true
@@ -57,8 +54,8 @@ outputs:
     description: "The S3 object key of the uploaded or reused Lambda package"
     value: ${{ steps.package.outputs.s3_key || steps.reuse.outputs.s3_key }}
   reason:
-    description: "Decision reason: forced | ledger_missing | ledger_failed | source_changed | no_changes"
-    value: ${{ steps.decision.outputs.reason }}
+    description: "Decision reason: forced | ledger_missing | ledger_failed | source_changed | no_changes | reuse_miss"
+    value: ${{ steps.reuse.outputs.reason || steps.decision.outputs.reason }}
 
 runs:
   using: "composite"
@@ -105,12 +102,12 @@ runs:
         S3_BUCKET: ${{ inputs.s3_bucket_name }}
         ENV: ${{ env.ENV }}
         LEDGER_PREFIX: ${{ inputs.ledger_prefix }}
-        FORCE_BUILD: ${{ inputs.force_build == 'true' || env.FORCE_BUILD == 'true' }}
+        FORCE_BUILD: ${{ inputs.force_build }}
         GITHUB_SHA: ${{ github.sha }}
         PAT: ${{ inputs.pat }}
       run: |
         set -euo pipefail
-        bash "$GITHUB_ACTION_PATH/decide.sh" >> "$GITHUB_OUTPUT"
+        bash "$GITHUB_ACTION_PATH/decide.sh"
 
     - name: Verify reuse package
       id: reuse
@@ -123,28 +120,7 @@ runs:
         BRANCH: ${{ github.ref_name }}
       run: |
         set -euo pipefail
-        if [ -z "${LAST_SUCCESS_SHA:-}" ]; then
-          echo "No last_success_sha; cannot reuse a zip" >&2
-          echo "hit=false" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
-        if [ ! -f "$GITHUB_ACTION_PATH/determine-env-and-key.sh" ]; then
-          echo "Missing helper: $GITHUB_ACTION_PATH/determine-env-and-key.sh" >&2
-          exit 1
-        fi
-        eval "$(bash "$GITHUB_ACTION_PATH/determine-env-and-key.sh" --branch "$BRANCH" --key-prefix "$KEY_PREFIX" --sha "$LAST_SUCCESS_SHA")"
-        if [ -z "${s3_key:-}" ]; then
-          echo "Failed to compute reuse s3_key" >&2
-          exit 1
-        fi
-        if aws s3api head-object --bucket "$S3_BUCKET" --key "$s3_key" >/dev/null 2>&1; then
-          echo "Reusing existing Lambda package $s3_key" >&2
-          echo "s3_key=$s3_key" >> "$GITHUB_OUTPUT"
-          echo "hit=true" >> "$GITHUB_OUTPUT"
-        else
-          echo "Reuse key $s3_key is missing; will package" >&2
-          echo "hit=false" >> "$GITHUB_OUTPUT"
-        fi
+        bash "$GITHUB_ACTION_PATH/reuse.sh"
 
     - name: Setup Python
       uses: actions/setup-python@v4
@@ -195,7 +171,6 @@ runs:
         rm -rf $TEMP_DIR
 
         echo "s3_key=$S3_KEY" >> $GITHUB_OUTPUT
-        echo "built=true" >> $GITHUB_OUTPUT
 
     - name: Update build ledger
       if: ${{ always() && steps.decision.outcome == 'success' && (steps.decision.outputs.should_build == 'true' || steps.reuse.outputs.hit != 'true') }}

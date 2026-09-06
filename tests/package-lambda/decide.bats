@@ -45,7 +45,7 @@ EOF
   export S3_BUCKET="crm-lambda-zips-prod"
   export LEDGER_PREFIX="build-ledger/"
   export FILTER_PATTERNS='["src/**"]'
-  unset FORCE_BUILD || true
+  unset FORCE_BUILD
 }
 
 teardown() {
@@ -131,4 +131,55 @@ _init_git_repo() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"should_build=true"* ]]
   [[ "$output" == *"reason=forced"* ]]
+}
+
+@test "bare FILTER_PATTERNS string covers source_changed and no_changes" {
+  export FILTER_PATTERNS='src/**'
+
+  repo="$GIT_WORK/bare-src-changed"
+  _init_git_repo "$repo"
+  echo "init" >"$repo/README.md"
+  git -C "$repo" add README.md
+  git -C "$repo" commit -qm init
+  first="$(git -C "$repo" rev-parse HEAD)"
+  mkdir -p "$repo/src"
+  echo "fn" >"$repo/src/handler.py"
+  git -C "$repo" add src/handler.py
+  git -C "$repo" commit -qm change
+  head="$(git -C "$repo" rev-parse HEAD)"
+
+  export ARTIFACT_ID="success"
+  export LEDGER_STUB_LAST_SUCCESS_SHA="$first"
+  export GITHUB_SHA="$head"
+  run bash -c "cd '$repo' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"should_build=true"* ]]
+  [[ "$output" == *"reason=source_changed"* ]]
+
+  repo="$GIT_WORK/bare-no-change"
+  _init_git_repo "$repo"
+  echo "init" >"$repo/README.md"
+  git -C "$repo" add README.md
+  git -C "$repo" commit -qm init
+  first="$(git -C "$repo" rev-parse HEAD)"
+  echo "docs" >"$repo/NOTES.md"
+  git -C "$repo" add NOTES.md
+  git -C "$repo" commit -qm docs
+  head="$(git -C "$repo" rev-parse HEAD)"
+
+  export LEDGER_STUB_LAST_SUCCESS_SHA="$first"
+  export GITHUB_SHA="$head"
+  run bash -c "cd '$repo' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"should_build=false"* ]]
+  [[ "$output" == *"reason=no_changes"* ]]
+}
+
+@test "changed_files is written to GITHUB_OUTPUT" {
+  export ARTIFACT_ID="missing"
+  export GITHUB_SHA="abc123"
+  export GITHUB_OUTPUT="$BATS_TEST_TMPDIR/github_output"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -q "changed_files" "$GITHUB_OUTPUT"
 }
