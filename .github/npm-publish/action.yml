@@ -1,0 +1,101 @@
+name: 'NPM Publish'
+description: 'Detect releasable changes, bump, publish to a registry, and commit the version bump'
+
+inputs:
+  release_paths:
+    description: 'Space-separated git pathspecs used in git diff --name-only <last_release>..HEAD'
+    required: true
+  token:
+    description: 'Token exported as NODE_AUTH_TOKEN for npm view/publish (typically secrets.GITHUB_TOKEN)'
+    required: true
+  registry_url:
+    description: 'npm registry URL appended to the publish command'
+    required: false
+    default: 'https://npm.pkg.github.com'
+  publish_command:
+    description: 'Publish command; the action appends --registry <registry_url>'
+    required: false
+    default: 'pnpm publish --access restricted --no-git-checks'
+  bump:
+    description: 'Argument to npm version --no-git-tag-version'
+    required: false
+    default: 'patch'
+  release_branch:
+    description: 'Remote branch for git push origin HEAD:<branch>'
+    required: false
+    default: 'main'
+
+outputs:
+  released:
+    description: '"true" if a package was published, otherwise "false"'
+    value: ${{ steps.release_changes.outputs.should_release == 'true' && steps.package_check.outputs.should_publish == 'true' }}
+  version:
+    description: 'Bumped package version when a release was attempted'
+    value: ${{ steps.bump.outputs.new_version }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Detect releasable changes
+      id: release_changes
+      shell: bash
+      env:
+        RELEASE_PATHS: ${{ inputs.release_paths }}
+      run: |
+        set -euo pipefail
+        "${{ github.action_path }}/detect-release.sh"
+
+    - name: Skip release when no package changes
+      if: steps.release_changes.outputs.should_release != 'true'
+      shell: bash
+      run: |
+        echo "Release skipped: no package-affecting changes."
+
+    - name: Bump version
+      if: steps.release_changes.outputs.should_release == 'true'
+      id: bump
+      shell: bash
+      run: |
+        set -euo pipefail
+        raw_version="$(npm version "${{ inputs.bump }}" --no-git-tag-version)"
+        new_version="${raw_version#v}"
+        echo "new_version=${new_version}" >> "$GITHUB_OUTPUT"
+        echo "Prepared version ${new_version}"
+
+    - name: Skip publish if version already exists
+      if: steps.release_changes.outputs.should_release == 'true'
+      id: package_check
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.token }}
+        PACKAGE_VERSION: ${{ steps.bump.outputs.new_version }}
+        REGISTRY_URL: ${{ inputs.registry_url }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        "${{ github.action_path }}/check-registry.sh"
+
+    - name: Publish package
+      if: steps.release_changes.outputs.should_release == 'true' && steps.package_check.outputs.should_publish == 'true'
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.token }}
+      shell: bash
+      run: ${{ inputs.publish_command }} --registry "${{ inputs.registry_url }}"
+
+    - name: Commit and push release bump
+      if: steps.release_changes.outputs.should_release == 'true' && steps.package_check.outputs.should_publish == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        version="${{ steps.bump.outputs.new_version }}"
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add package.json
+        if [[ -f pnpm-lock.yaml ]]; then
+          git add pnpm-lock.yaml
+        fi
+        if git diff --cached --quiet; then
+          echo "No version changes detected; skipping commit."
+          exit 0
+        fi
+        git commit -m "chore(release): v${version} [skip ci]"
+        git push origin "HEAD:${{ inputs.release_branch }}"
