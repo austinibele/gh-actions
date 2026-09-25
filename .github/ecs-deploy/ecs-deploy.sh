@@ -46,7 +46,8 @@ log_service_stability_diagnostics() {
 wait_for_service_stability() {
   local cluster_name="$1"
   local service_name="$2"
-  local deadline_epoch now_epoch remaining_seconds sleep_seconds service_snapshot describe_status
+  local target_task_definition_arn="$3"
+  local deadline_epoch now_epoch remaining_seconds sleep_seconds service_snapshot describe_status rollback_reason
 
   deadline_epoch="$(($(date +%s) + SERVICES_STABLE_TIMEOUT_MINUTES * 60))"
   echo "Waiting up to ${SERVICES_STABLE_TIMEOUT_MINUTES} minute(s) for ${service_name} to stabilize (polling every ${SERVICES_STABLE_POLL_INTERVAL_SECONDS} seconds)"
@@ -61,13 +62,33 @@ wait_for_service_stability() {
       return "$describe_status"
     fi
 
-    if jq -e '
+    # Stable means the ONLY remaining deployment is the one we just registered.
+    # After a circuit-breaker rollback the service also settles on a single
+    # deployment with running == desired, but on the previous task definition.
+    if jq -e --arg target "$target_task_definition_arn" '
       (.failures | length) == 0 and
       (.services | length) > 0 and
-      all(.services[]; ((.deployments | length) == 1 and .runningCount == .desiredCount))
+      all(.services[];
+        (.deployments | length) == 1 and
+        .runningCount == .desiredCount and
+        .deployments[0].taskDefinition == $target)
     ' <<<"$service_snapshot" >/dev/null; then
-      echo "ECS service ${service_name} is stable"
+      echo "ECS service ${service_name} is stable on ${target_task_definition_arn}"
       return 0
+    fi
+
+    rollback_reason="$(jq -r --arg target "$target_task_definition_arn" '
+      [.services[]?.deployments[]?] as $deployments
+      | ($deployments | map(select(.rolloutState == "FAILED")) | first) as $failed
+      | if $failed != null then ($failed.rolloutStateReason // "deployment rolloutState is FAILED")
+        elif (($deployments | length) > 0 and all($deployments[]; .taskDefinition != $target))
+          then "deployment for \($target) is gone; service rolled back to \($deployments[0].taskDefinition)"
+        else empty end
+    ' <<<"$service_snapshot")"
+    if [[ -n "$rollback_reason" ]]; then
+      echo "::error::ECS deployment of ${service_name} failed: ${rollback_reason}"
+      log_service_stability_diagnostics "$cluster_name" "$service_name"
+      return 1
     fi
 
     now_epoch="$(date +%s)"
@@ -191,7 +212,7 @@ deploy_service_group() {
   new_task_definition_arn="$(aws "${register_task_definition_args[@]}")"
   echo "Deploying $service_key via $service_name -> $new_task_definition_arn"
   aws ecs update-service --cluster "$cluster_name" --service "$service_name" --task-definition "$new_task_definition_arn"
-  wait_for_service_stability "$cluster_name" "$service_name"
+  wait_for_service_stability "$cluster_name" "$service_name" "$new_task_definition_arn"
 }
 
 while IFS= read -r service_group; do
