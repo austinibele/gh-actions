@@ -1,3 +1,19 @@
+# Runtime contract (see resolve-runtime.sh):
+#   runtime: python (default)
+#     Copies build_directory as-is into the zip. If it has a requirements.txt,
+#     installs it with pip -t . first. Unchanged from before the "node" runtime
+#     existed; python_version keeps working for existing callers.
+#   runtime: node
+#     build_directory must be a pnpm workspace package (name read from its
+#     package.json) with a "build:lambda" script that produces a
+#     self-contained bundle - every dependency inlined, no further
+#     `npm install` at deploy time - at "<build_directory>/dist/lambda/".
+#     The action runs `pnpm install --filter <pkg>... --frozen-lockfile` from
+#     the repo root (so the workspace dependency closure resolves), then
+#     `pnpm --dir <build_directory> run build:lambda`, then zips the flat
+#     contents of dist/lambda/ (e.g. handler.mjs sits at the zip root).
+#     Private @scope packages resolve via NODE_AUTH_TOKEN, set from the same
+#     `pat` input already used for git operations.
 name: 'Package Lambda'
 description: 'Packages a Lambda function and uploads it to S3, skipping via the S3 build ledger when unchanged'
 inputs:
@@ -8,11 +24,22 @@ inputs:
     description: 'Prefix for the S3 zip key and ledger artifact_id (e.g., "slack-error-notifier")'
     required: true
   python_version:
-    description: 'Python version to use when installing dependencies (e.g., "3.12")'
+    description: 'Python version to use when installing dependencies (e.g., "3.12"). Ignored unless runtime is "python"; kept for existing callers.'
     required: false
     default: '3.12'
+  runtime:
+    description: 'Lambda build runtime: "python" (default) or "node"'
+    required: false
+    default: 'python'
+  runtime_version:
+    description: 'Runtime version override. Defaults: python -> python_version or 3.12; node -> 22.'
+    required: false
+    default: ''
   build_directory:
-    description: 'Directory containing the Lambda function code'
+    description: >-
+      Directory containing the Lambda function code. For runtime "node", a
+      pnpm workspace package whose "build:lambda" script writes a
+      self-contained bundle to "<build_directory>/dist/lambda/".
     required: true
   build_env:
     description: 'JSON array of environment variables to use during build, format: [{"name": "VAR_NAME", "value": "value"}]'
@@ -122,11 +149,44 @@ runs:
         set -euo pipefail
         bash "$GITHUB_ACTION_PATH/reuse.sh"
 
+    - name: Resolve build runtime
+      id: runtime
+      if: steps.decision.outputs.should_build == 'true' || steps.reuse.outputs.hit != 'true'
+      shell: bash
+      env:
+        RUNTIME: ${{ inputs.runtime }}
+        RUNTIME_VERSION: ${{ inputs.runtime_version }}
+        PYTHON_VERSION: ${{ inputs.python_version }}
+      run: |
+        set -euo pipefail
+        bash "$GITHUB_ACTION_PATH/resolve-runtime.sh"
+
     - name: Setup Python
       uses: actions/setup-python@v4
-      if: steps.decision.outputs.should_build == 'true' || steps.reuse.outputs.hit != 'true'
+      if: (steps.decision.outputs.should_build == 'true' || steps.reuse.outputs.hit != 'true') && inputs.runtime == 'python'
       with:
-        python-version: ${{ inputs.python_version }}
+        python-version: ${{ steps.runtime.outputs.version }}
+
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      if: (steps.decision.outputs.should_build == 'true' || steps.reuse.outputs.hit != 'true') && inputs.runtime == 'node'
+      with:
+        node-version: ${{ steps.runtime.outputs.version }}
+
+    - name: Enable Corepack
+      if: (steps.decision.outputs.should_build == 'true' || steps.reuse.outputs.hit != 'true') && inputs.runtime == 'node'
+      shell: bash
+      run: corepack enable
+
+    - name: Install and build Node Lambda package
+      if: (steps.decision.outputs.should_build == 'true' || steps.reuse.outputs.hit != 'true') && inputs.runtime == 'node'
+      shell: bash
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.pat }}
+        BUILD_DIRECTORY: ${{ inputs.build_directory }}
+      run: |
+        set -euo pipefail
+        bash "$GITHUB_ACTION_PATH/build-node-package.sh"
 
     - name: Package Lambda
       id: package
@@ -150,18 +210,28 @@ runs:
 
         TEMP_DIR=$(mktemp -d)
 
-        source "$GITHUB_ACTION_PATH/export-build-env.sh" --json "${{ inputs.build_env }}"
+        # Node bundles are pre-built by the "Install and build Node Lambda
+        # package" step above; zip its dist/lambda output flat. Python keeps
+        # the original copy-build_directory-then-install-deps flow below
+        # byte-for-byte, so existing Python callers are unaffected.
+        if [ "${{ inputs.runtime }}" = "node" ]; then
+          cp -r "${{ inputs.build_directory }}/dist/lambda/." "$TEMP_DIR/"
 
-        cp -r ${{ inputs.build_directory }}/* $TEMP_DIR/
+          cd "$TEMP_DIR"
+        else
+          source "$GITHUB_ACTION_PATH/export-build-env.sh" --json "${{ inputs.build_env }}"
 
-        cd $TEMP_DIR
+          cp -r ${{ inputs.build_directory }}/* $TEMP_DIR/
 
-        if [ -f "package.json" ]; then
-          npm install --production
-        elif [ -f "requirements.txt" ]; then
-          echo "Installing Python dependencies with Python ${{ inputs.python_version }}..."
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt -t .
+          cd $TEMP_DIR
+
+          if [ -f "package.json" ]; then
+            npm install --production
+          elif [ -f "requirements.txt" ]; then
+            echo "Installing Python dependencies with Python ${{ inputs.python_version }}..."
+            python -m pip install --upgrade pip
+            python -m pip install -r requirements.txt -t .
+          fi
         fi
 
         zip -r lambda_package.zip ./* -x "*.git*" "*__pycache__*" "*.pytest_cache*" "*.venv*"
