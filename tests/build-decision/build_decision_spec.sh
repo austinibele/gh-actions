@@ -217,4 +217,37 @@ Describe 'build-decision.sh'
       The output should include "last_success_sha=deadbeef"
     End
   End
+
+  Describe 'changed_files output'
+    It 'keeps the first 200 paths and counts the rest when the diff is larger'
+      When run bash -c '
+        source "'"${SCRIPT_DIR}"'/../helpers/common.sh"
+        stub_dir=$(mktemp -d)
+        PATH="$stub_dir:$PATH"
+        create_aws_stub "$stub_dir"
+        create_gh_stub_no_runs "$stub_dir"
+        paths=$(printf "src/f%s.ts\n" $(seq 1 250))
+        create_git_stub "$stub_dir" "$paths"
+
+        export ENV="dev"
+        export ARTIFACT_ID="oldsha"
+        export FILTER_PATTERNS="[\"src/**\"]"
+        export S3_BUCKET="test-bucket"
+        export CHECK_PREVIOUS_RUN="false"
+        export CHANGED_FILES_OUTPUT_LIMIT="200"
+        export GITHUB_OUTPUT=$(mktemp)
+        export GITHUB_SHA="abc123"
+
+        bash "$SCRIPT_UNDER_TEST" >/dev/null 2>&1
+        block=$(awk "/^changed_files<<EOF\$/{f=1;next} /^EOF\$/{f=0} f" "$GITHUB_OUTPUT")
+        echo "block_lines=$(printf "%s\n" "$block" | wc -l | tr -d " ")"
+        printf "%s\n" "$block" | head -n 1
+        printf "%s\n" "$block" | tail -n 1
+      '
+      The output should include "block_lines=201"
+      The output should include "src/f1.ts"
+      The output should include "... and 50 more"
+      The output should not include "src/f250.ts"
+    End
+  End
 End

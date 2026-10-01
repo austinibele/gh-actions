@@ -45,7 +45,7 @@ Artifact-agnostic build decision logic using S3 ledger, change detection, and pr
 | `should_build` | `"true"` or `"false"` |
 | `reason` | One of: `source_changed`, `previous_failed`, `ledger_missing`, `ledger_failed`, `forced`, `no_changes` |
 | `last_success_sha` | SHA of last successful build |
-| `changed_files` | List of changed files (if any) |
+| `changed_files` | List of changed files (if any); the first 200 paths, then "... and N more" |
 
 ## Decision Matrix
 

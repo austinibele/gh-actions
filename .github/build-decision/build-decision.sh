@@ -24,6 +24,7 @@
 #   CHECK_PREVIOUS_RUN   - Check previous run status (default: true)
 #   JOB_PATTERN          - Pattern to match job name
 #   FORCE_BUILD          - Force rebuild (default: false)
+#   CHANGED_FILES_OUTPUT_LIMIT - Max paths in the changed_files output (default: 200)
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
@@ -54,6 +55,23 @@ write_output_multiline() {
       echo "EOF"
     } >> "$GITHUB_OUTPUT"
   fi
+}
+
+# Number of paths kept in the changed_files output. A stale ledger can diff
+# months of history, and GitHub rejects a step output past its size limit
+# ("The template is not valid ... Maximum object size exceeded").
+CHANGED_FILES_OUTPUT_LIMIT="${CHANGED_FILES_OUTPUT_LIMIT:-200}"
+
+# Helper: write changed_files, keeping the first CHANGED_FILES_OUTPUT_LIMIT paths
+write_changed_files_output() {
+  local value="$1" total kept
+  total=$(printf '%s\n' "$value" | grep -c . || true)
+  if (( total > CHANGED_FILES_OUTPUT_LIMIT )); then
+    kept=$(printf '%s\n' "$value" | grep . | head -n "$CHANGED_FILES_OUTPUT_LIMIT")
+    value="${kept}"$'\n'"... and $((total - CHANGED_FILES_OUTPUT_LIMIT)) more"
+    echo "changed_files output truncated to ${CHANGED_FILES_OUTPUT_LIMIT} of ${total} paths" >&2
+  fi
+  write_output_multiline "changed_files" "$value"
 }
 
 main() {
@@ -100,7 +118,7 @@ main() {
   echo "Step 2: Checking for source changes..." >&2
   detect_changes "$FILTER_PATTERNS" "$last_success_sha"
 
-  write_output_multiline "changed_files" "${CHANGED_FILES:-}"
+  write_changed_files_output "${CHANGED_FILES:-}"
 
   if [[ "$CHANGES_DETECTED" == "true" ]]; then
     echo "Source changes detected" >&2
