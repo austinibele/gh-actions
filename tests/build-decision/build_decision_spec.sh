@@ -12,6 +12,7 @@ Describe 'build-decision.sh'
   Describe 'FORCE_BUILD behavior'
     It 'outputs should_build=true and reason=forced when FORCE_BUILD=true'
       When run bash -c '
+        export ENV="dev"
         export ARTIFACT_ID="test-artifact"
         export FILTER_PATTERNS="[]"
         export S3_BUCKET="test-bucket"
@@ -27,6 +28,7 @@ Describe 'build-decision.sh'
 
     It 'outputs should_build=true when FORCE_BUILD=1'
       When run bash -c '
+        export ENV="dev"
         export ARTIFACT_ID="test-artifact"
         export FILTER_PATTERNS="[]"
         export S3_BUCKET="test-bucket"
@@ -48,6 +50,7 @@ Describe 'build-decision.sh'
         create_aws_stub "$stub_dir"
         create_git_stub "$stub_dir" ""
         
+        export ENV="dev"
         export ARTIFACT_ID="missing"
         export FILTER_PATTERNS="[\"src/**\"]"
         export S3_BUCKET="test-bucket"
@@ -73,6 +76,7 @@ Describe 'build-decision.sh'
         create_aws_stub "$stub_dir"
         create_git_stub "$stub_dir" ""
         
+        export ENV="dev"
         export ARTIFACT_ID="failure"
         export FILTER_PATTERNS="[\"src/**\"]"
         export S3_BUCKET="test-bucket"
@@ -96,6 +100,7 @@ Describe 'build-decision.sh'
         create_aws_stub "$stub_dir"
         create_git_stub "$stub_dir" ""
         
+        export ENV="dev"
         export ARTIFACT_ID="failure-no-success"
         export FILTER_PATTERNS="[\"src/**\"]"
         export S3_BUCKET="test-bucket"
@@ -121,6 +126,7 @@ Describe 'build-decision.sh'
         create_aws_stub "$stub_dir"
         create_git_stub "$stub_dir" "src/main.ts"
         
+        export ENV="dev"
         export ARTIFACT_ID="oldsha"
         export FILTER_PATTERNS="[\"src/**\"]"
         export S3_BUCKET="test-bucket"
@@ -147,6 +153,7 @@ Describe 'build-decision.sh'
         create_git_stub "$stub_dir" "docs/README.md"
         create_gh_stub_no_runs "$stub_dir"
         
+        export ENV="dev"
         export ARTIFACT_ID="oldsha"
         export FILTER_PATTERNS="[\"src/**\"]"
         export S3_BUCKET="test-bucket"
@@ -173,6 +180,7 @@ Describe 'build-decision.sh'
         create_git_stub "$stub_dir" "docs/README.md"
         create_gh_stub_previous_failed "$stub_dir" "12345"
         
+        export ENV="dev"
         export ARTIFACT_ID="oldsha"
         export FILTER_PATTERNS="[\"src/**\"]"
         export S3_BUCKET="test-bucket"
@@ -204,6 +212,7 @@ Describe 'build-decision.sh'
         create_git_stub "$stub_dir" "docs/README.md"
         create_gh_stub_no_runs "$stub_dir"
         
+        export ENV="dev"
         export ARTIFACT_ID="oldsha"
         export FILTER_PATTERNS="[\"src/**\"]"
         export S3_BUCKET="test-bucket"

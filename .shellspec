@@ -3,3 +3,4 @@
 --pattern tests/*_spec.sh
 --execdir @specfile
 --no-warning-as-failure
+--shell bash

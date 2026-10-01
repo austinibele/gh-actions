@@ -12,7 +12,12 @@
 # Public functions:
 #   detect_changes <filter_patterns_json> [base_sha]
 #     → Sets: CHANGES_DETECTED ("true"|"false")
-#     → Sets: CHANGED_FILES (newline-separated list)
+#     → Sets: CHANGED_FILES (newline-separated list, every path in the diff)
+#
+# CHANGED_FILES is a shell variable, never exported: a stale ledger diffs tens
+# of thousands of paths, and Linux refuses to start any program whose
+# environment holds one string over 128 KiB ("Argument list too long"), so an
+# exported list breaks every command the caller runs after detect_changes.
 #
 # Environment variables:
 #   PAT - Personal access token for private submodule access (optional)
@@ -159,7 +164,7 @@ detect_changes() {
   if [[ -z "$filter_patterns_json" ]]; then
     CHANGES_DETECTED="true"
     echo "No filter pattern provided, assuming changes" >&2
-    export CHANGES_DETECTED CHANGED_FILES
+    export CHANGES_DETECTED
     return 0
   fi
 
@@ -176,7 +181,7 @@ detect_changes() {
   if [[ -z "$prev_commit" ]]; then
     echo "Could not determine base commit, assuming changes" >&2
     CHANGES_DETECTED="true"
-    export CHANGES_DETECTED CHANGED_FILES
+    export CHANGES_DETECTED
     return 0
   fi
 
@@ -189,7 +194,7 @@ detect_changes() {
     git fetch --depth=1 origin "$prev_commit" 2>/dev/null || {
       echo "Warning: Could not fetch base commit $prev_commit, assuming changes" >&2
       CHANGES_DETECTED="true"
-      export CHANGES_DETECTED CHANGED_FILES
+      export CHANGES_DETECTED
       return 0
     }
   fi
@@ -201,7 +206,7 @@ detect_changes() {
   if [[ -z "$changed_files" ]]; then
     echo "No changed files detected" >&2
     CHANGES_DETECTED="false"
-    export CHANGES_DETECTED CHANGED_FILES
+    export CHANGES_DETECTED
     return 0
   fi
 
@@ -217,7 +222,7 @@ detect_changes() {
   if [[ -z "$patterns_raw" ]]; then
     echo "Could not parse filter patterns, assuming changes" >&2
     CHANGES_DETECTED="true"
-    export CHANGES_DETECTED CHANGED_FILES
+    export CHANGES_DETECTED
     return 0
   fi
 
@@ -292,6 +297,7 @@ detect_changes() {
     done <<< "$submodules"
   fi
 
+  # shellcheck disable=SC2034 # read by the caller that sources this library
   CHANGED_FILES="$all_changed_files"
 
   # Check if any changed file matches the patterns
@@ -300,12 +306,12 @@ detect_changes() {
     if _matches_patterns "$changed_file" "${patterns[@]}"; then
       CHANGES_DETECTED="true"
       echo "Changes detected: $CHANGES_DETECTED" >&2
-      export CHANGES_DETECTED CHANGED_FILES
+      export CHANGES_DETECTED
       return 0
     fi
   done <<< "$all_changed_files"
 
   echo "No matching changes detected" >&2
-  export CHANGES_DETECTED CHANGED_FILES
+  export CHANGES_DETECTED
   return 0
 }

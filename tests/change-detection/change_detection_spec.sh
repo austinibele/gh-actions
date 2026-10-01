@@ -152,4 +152,20 @@ src/b.ts"
     The output should include "src/a.ts"
     The output should include "src/b.ts"
   End
+
+  It 'keeps CHANGED_FILES out of the environment of the commands that follow'
+    When run bash -c '
+      source "$SCRIPT_UNDER_TEST"
+      source "'"${SCRIPT_DIR}"'/../helpers/common.sh"
+      stub_dir=$(mktemp -d)
+      PATH="$stub_dir:$PATH"
+      create_git_stub "$stub_dir" "src/a.ts"
+      export GITHUB_EVENT_BEFORE=abc GITHUB_SHA=def
+      detect_changes "[\"src/**\"]" 2>/dev/null
+      env | grep -c "^CHANGED_FILES=" || true
+      env | grep -c "^CHANGES_DETECTED=" || true
+    '
+    The line 1 of output should equal "0"
+    The line 2 of output should equal "1"
+  End
 End
