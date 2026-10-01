@@ -67,7 +67,8 @@ write_changed_files_output() {
   local value="$1" total kept
   total=$(printf '%s\n' "$value" | grep -c . || true)
   if (( total > CHANGED_FILES_OUTPUT_LIMIT )); then
-    kept=$(printf '%s\n' "$value" | grep . | head -n "$CHANGED_FILES_OUTPUT_LIMIT")
+    # awk reads to the end: `head` would exit early and, under pipefail, fail the step with a broken pipe.
+    kept=$(printf '%s\n' "$value" | awk -v limit="$CHANGED_FILES_OUTPUT_LIMIT" 'length($0) && n < limit { print; n++ }')
     value="${kept}"$'\n'"... and $((total - CHANGED_FILES_OUTPUT_LIMIT)) more"
     echo "changed_files output truncated to ${CHANGED_FILES_OUTPUT_LIMIT} of ${total} paths" >&2
   fi

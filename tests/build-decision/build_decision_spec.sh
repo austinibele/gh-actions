@@ -226,7 +226,7 @@ Describe 'build-decision.sh'
         PATH="$stub_dir:$PATH"
         create_aws_stub "$stub_dir"
         create_gh_stub_no_runs "$stub_dir"
-        paths=$(printf "src/f%s.ts\n" $(seq 1 250))
+        paths=$(printf "src/f%s.ts\n" $(seq 1 20000))
         create_git_stub "$stub_dir" "$paths"
 
         export ENV="dev"
@@ -246,8 +246,8 @@ Describe 'build-decision.sh'
       '
       The output should include "block_lines=201"
       The output should include "src/f1.ts"
-      The output should include "... and 50 more"
-      The output should not include "src/f250.ts"
+      The output should include "... and 19800 more"
+      The output should not include "src/f20000.ts"
     End
   End
 End
