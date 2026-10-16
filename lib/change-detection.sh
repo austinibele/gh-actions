@@ -93,11 +93,12 @@ _get_submodule_paths() {
   fi
 }
 
-# Internal: Configure git for private repo access
-_configure_git_for_submodules() {
+# Keep network authentication command-scoped; public callers need no PAT.
+_github_git() {
   if [[ -n "${PAT:-}" ]]; then
-    echo "Configuring git for submodule access..." >&2
-    git config --global url."https://${PAT}@github.com/".insteadOf "https://github.com/"
+    bash "$(dirname "${BASH_SOURCE[0]}")/github-git.sh" "$@"
+  else
+    git "$@"
   fi
 }
 
@@ -130,7 +131,7 @@ _get_submodule_changed_files() {
   echo "Checking changes in submodule '$submodule_path' ($old_sha..$new_sha)..." >&2
 
   # Initialize/update just this submodule
-  git submodule update --init "$submodule_path" 2>/dev/null || {
+  _github_git submodule update --init "$submodule_path" >&2 || {
     echo "Warning: Failed to checkout submodule '$submodule_path'" >&2
     return 1
   }
@@ -191,7 +192,7 @@ detect_changes() {
   # Ensure the base commit is reachable (shallow clones may not have it)
   if ! git cat-file -e "${prev_commit}^{commit}" 2>/dev/null; then
     echo "Base commit $prev_commit not in local history, fetching..." >&2
-    git fetch --depth=1 origin "$prev_commit" 2>/dev/null || {
+    _github_git fetch --depth=1 origin "$prev_commit" >&2 || {
       echo "Warning: Could not fetch base commit $prev_commit, assuming changes" >&2
       CHANGES_DETECTED="true"
       export CHANGES_DETECTED
@@ -263,9 +264,6 @@ detect_changes() {
         # Check if any filter pattern could match files in this submodule
         if _could_match_patterns "$submodule_path" "${patterns[@]}"; then
           echo "Filter patterns may match files in submodule '$submodule_path', inspecting..." >&2
-
-          # Configure git for private submodule access
-          _configure_git_for_submodules
 
           # Get old and new submodule commits
           local commits
