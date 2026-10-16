@@ -94,16 +94,11 @@ runs:
         fetch-tags: false
         filter: blob:none
 
-    - name: Configure Git # Required because we are using submodules
-      shell: bash
-      run: |
-        git config --global user.email "${{ inputs.email }}"
-        git config --global user.name "${{ inputs.username }}"
-        git config --global url.https://${{ inputs.pat }}@github.com/.insteadOf https://github.com/
-
     - name: Checkout submodules
       shell: bash
-      run: git submodule update --init --recursive
+      env:
+        PAT: ${{ inputs.pat }}
+      run: bash "$GITHUB_ACTION_PATH/../../lib/github-git.sh" submodule update --init --recursive
 
     - name: Configure AWS credentials (OIDC)
       if: ${{ inputs.role_to_assume != '' }}
