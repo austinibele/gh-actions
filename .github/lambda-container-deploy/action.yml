@@ -1,0 +1,46 @@
+name: 'Deploy Lambda container images'
+description: 'Points the container-image Lambda functions listed in Terraform deploy metadata at their new images and waits for each code update to finish.'
+inputs:
+  terraform-working-directory:
+    description: 'Directory containing the Terraform stack; the step runs here and reads the tf-output.json that ecs-deploy wrote.'
+    required: true
+  deploy-metadata-output:
+    description: 'Terraform output name for the deploy metadata JSON (its lambda_functions map, or a legacy single lambda entry).'
+    required: true
+  image-uris-json:
+    description: 'JSON object of service id -> ECR image URI.'
+    required: true
+  rebuilt-service-ids-json:
+    description: 'JSON array of service ids rebuilt in this workflow run.'
+    required: true
+  env-or-infra-changed:
+    description: 'Whether deploy/env or infra paths changed (true/false string from matrix job).'
+    required: true
+  expected-lambda-functions-json:
+    description: 'JSON object mapping the Lambda keys this workflow owns to { image_service_id }; each must be in the deploy metadata with that image_service_id.'
+    required: false
+    default: '{}'
+  update-poll-seconds:
+    description: 'Seconds between get-function checks while a Lambda code update is in progress.'
+    required: false
+    default: '5'
+  update-max-polls:
+    description: 'Number of get-function checks before an unfinished Lambda code update fails the step.'
+    required: false
+    default: '60'
+
+runs:
+  using: composite
+  steps:
+    - name: Deploy Lambda container images
+      shell: bash
+      working-directory: ${{ inputs.terraform-working-directory }}
+      env:
+        DEPLOY_METADATA_OUTPUT: ${{ inputs.deploy-metadata-output }}
+        IMAGE_URIS_JSON: ${{ inputs.image-uris-json }}
+        REBUILT_SERVICE_IDS_JSON: ${{ inputs.rebuilt-service-ids-json }}
+        ENV_OR_INFRA_CHANGED: ${{ inputs.env-or-infra-changed }}
+        EXPECTED_LAMBDA_FUNCTIONS_JSON: ${{ inputs.expected-lambda-functions-json }}
+        LAMBDA_UPDATE_POLL_SECONDS: ${{ inputs.update-poll-seconds }}
+        LAMBDA_UPDATE_MAX_POLLS: ${{ inputs.update-max-polls }}
+      run: bash "${{ github.action_path }}/deploy-lambda-container-images.sh"
