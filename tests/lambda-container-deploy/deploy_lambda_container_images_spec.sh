@@ -10,7 +10,7 @@ SSR_IMAGE="123456789012.dkr.ecr.us-east-1.amazonaws.com/ssr:abc123"
 IMAGE_URIS='{"ssr":"'"$SSR_IMAGE"'"}'
 EXPECTED_SSR='{"ssr":{"image_service_id":"ssr"}}'
 
-# AWS_LAMBDA_MODE: successful | in-progress-then-successful | failed
+# AWS_LAMBDA_MODE: successful | in-progress-then-successful | in-progress | failed
 _make_aws_stub() {
   local stub_dir="$1"
   cat >"${stub_dir}/aws" <<'EOF'
@@ -33,6 +33,7 @@ case "$1 $2" in
           printf '%s\t%s\n' InProgress None
         fi
         ;;
+      in-progress) printf '%s\t%s\n' InProgress None ;;
       failed) printf '%s\t%s\n' Failed 'Image manifest not found' ;;
     esac
     ;;
@@ -146,6 +147,27 @@ Describe 'deploy-lambda-container-images.sh'
 
     The status should equal 1
     The output should include "::error::Lambda app-ssr update failed: Image manifest not found"
+  End
+
+  It 'fails when the update is still in progress after update-max-polls checks'
+    _write_tf_output "$(_metadata '{"ssr":{"function_name":"app-ssr","image_service_id":"ssr"}}')"
+
+    When run _run_script AWS_LAMBDA_MODE=in-progress REBUILT_SERVICE_IDS_JSON='["ssr"]' ENV_OR_INFRA_CHANGED=false EXPECTED_LAMBDA_FUNCTIONS_JSON="$EXPECTED_SSR"
+
+    The status should equal 1
+    The output should include "OPS=lambda update-function-code|lambda get-function|lambda get-function|lambda get-function|"
+    The output should include "::error::Lambda app-ssr update did not finish after 3 checks (last status: 'InProgress')"
+  End
+
+  It 'maps a legacy single lambda entry onto the one expected mapping and updates it'
+    _write_tf_output '{"app_deploy_metadata":{"value":{"lambda":{"function_name":"app-ssr"}}}}'
+
+    When run _run_script REBUILT_SERVICE_IDS_JSON='["ssr"]' ENV_OR_INFRA_CHANGED=false EXPECTED_LAMBDA_FUNCTIONS_JSON="$EXPECTED_SSR"
+
+    The status should be success
+    The output should include "Using legacy lambda deploy metadata with the configured Lambda mapping"
+    The output should include "lambda update-function-code --function-name app-ssr --image-uri ${SSR_IMAGE}"
+    The output should include "Lambda app-ssr update finished: Successful"
   End
 
   It 'on an env/infra change updates the Lambdas it owns and skips one another pipeline builds'

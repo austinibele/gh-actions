@@ -44,7 +44,12 @@ JSON
     ;;
   "events list-targets-by-rule")
     if [[ "\$*" == *"EcsParameters.TaskDefinitionArn"* ]]; then
-      printf '%s\n' "\${AWS_EB_VERIFIED_ARN:-${TD_PREFIX}:5}"
+      # The first ARN query verifies put-targets; later ones run before each deregistration.
+      if [[ -n "\${AWS_EB_ARN_AFTER_VERIFY:-}" && "\$(grep -c 'EcsParameters.TaskDefinitionArn' "\$AWS_CALL_LOG")" -ge 2 ]]; then
+        printf '%s\n' "\$AWS_EB_ARN_AFTER_VERIFY"
+      else
+        printf '%s\n' "\${AWS_EB_VERIFIED_ARN:-${TD_PREFIX}:5}"
+      fi
     else
       printf '%s\n' '{"Id":"web-cron","Arn":"arn:aws:ecs:us-east-1:123456789012:cluster/app","EcsParameters":{"TaskDefinitionArn":"${TD_PREFIX}:4"}}'
     fi
@@ -153,6 +158,21 @@ Describe 'update-standalone-tasks.sh'
     The status should equal 1
     The output should include "events put-targets --rule web-cron --event-bus-name jobs"
     The output should include "::error::EventBridge rule web-cron still points at ${TD_PREFIX}:4 after put-targets; expected ${TD_PREFIX}:5"
+    The output should not include "deregister-task-definition"
+  End
+
+  It 'refuses to deregister an older revision the EventBridge rule still references after the rule was repointed'
+    When run env \
+      PATH="$stub_dir:$PATH" \
+      AWS_CALL_LOG="$call_log" \
+      AWS_EB_ARN_AFTER_VERIFY="${TD_PREFIX}:3" \
+      STANDALONE_TASKS_JSON='{"web_cron":{"task_definition_arn":"'"$TD_PREFIX"':4","image_service_id":"web","scheduled":true,"eventbridge_rule_name":"web-cron","eventbridge_bus_name":"jobs"}}' \
+      IMAGE_URIS_JSON="$IMAGE_URIS" \
+      bash -c 'cd "'"$workdir"'"; bash "$SCRIPT_UNDER_TEST"; status=$?; echo "CALLS<<$(cat "'"$call_log"'")>>"; exit "$status"'
+
+    The status should equal 1
+    The output should include "Updated EventBridge rule web-cron -> ${TD_PREFIX}:5"
+    The output should include "::error::Refusing to deregister ${TD_PREFIX}:3 because EventBridge rule web-cron still references it"
     The output should not include "deregister-task-definition"
   End
 End
