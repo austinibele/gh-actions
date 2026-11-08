@@ -34,6 +34,14 @@ inputs:
     description: 'Maximum number of minutes to wait for each updated ECS service to become stable.'
     required: false
     default: '20'
+  require-completed-rollout:
+    description: 'Require the intended PRIMARY rollout to be COMPLETED with all desired tasks running and none pending. Requires an ECS rolling deployment without a Classic Load Balancer.'
+    required: false
+    default: 'false'
+  services-stable-poll-seconds:
+    description: 'Seconds between ECS stability checks (integer from 1 to 60).'
+    required: false
+    default: '15'
 
 outputs:
   metadata_configured:
@@ -60,4 +68,6 @@ runs:
         SKIP_WHEN_METADATA_ABSENT: ${{ inputs.skip-when-metadata-absent }}
         REPOSITORY_TAG: ${{ inputs.repository-tag }}
         SERVICES_STABLE_TIMEOUT_MINUTES: ${{ inputs.services-stable-timeout-minutes }}
+        REQUIRE_COMPLETED_ROLLOUT: ${{ inputs.require-completed-rollout }}
+        SERVICES_STABLE_POLL_INTERVAL_SECONDS: ${{ inputs.services-stable-poll-seconds }}
       run: bash "${{ github.action_path }}/ecs-deploy.sh"
