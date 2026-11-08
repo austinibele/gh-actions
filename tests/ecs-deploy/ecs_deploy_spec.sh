@@ -116,7 +116,9 @@ JSON
         *) printf '%s\n' "$snapshot" ;;
       esac
     elif [[ "$AWS_POLL_MODE" == "rollback-failed" && "$poll_count" -ge 2 ]]; then
-      printf '%s\n' '{"failures":[],"services":[{"desiredCount":1,"runningCount":1,"pendingCount":0,"deployments":[{"status":"PRIMARY","rolloutState":"FAILED","rolloutStateReason":"ECS deployment circuit breaker: tasks failed to start.","desiredCount":1,"runningCount":1,"pendingCount":0,"taskDefinition":"arn:aws:ecs:us-east-1:123:task-definition/crm-backend:2"}],"events":[{"message":"rolling back to deployment ecs-svc/1"}]}]}'
+      jq --arg reason "$AWS_ROLLOUT_REASON" '.services[0].deployments[0].rolloutStateReason = $reason' <<'JSON'
+{"failures":[],"services":[{"desiredCount":1,"runningCount":1,"pendingCount":0,"deployments":[{"status":"PRIMARY","rolloutState":"FAILED","desiredCount":1,"runningCount":1,"pendingCount":0,"taskDefinition":"arn:aws:ecs:us-east-1:123:task-definition/crm-backend:2"}],"events":[{"message":"rolling back to deployment ecs-svc/1"}]}]}
+JSON
     elif [[ "$AWS_POLL_MODE" == "rollback-settled" && "$poll_count" -ge 2 ]]; then
       printf '%s\n' '{"failures":[],"services":[{"desiredCount":1,"runningCount":1,"pendingCount":0,"deployments":[{"status":"PRIMARY","rolloutState":"COMPLETED","taskDefinition":"arn:aws:ecs:us-east-1:123:task-definition/crm-backend:1"}],"events":[{"message":"rollback completed"}]}]}'
     elif [[ "$AWS_POLL_MODE" == "recover" && "$poll_count" -ge 2 ]]; then
@@ -599,39 +601,47 @@ EOF
     The output should include "service-events"
   End
 
-  It 'rejects a sole FAILED rollout with matching counts even with the default policy'
-    stub_dir=$(mktemp -d)
-    PATH="$stub_dir:$PATH"
-    workdir=$(mktemp -d)
-    gh_out=$(mktemp)
-    poll_state=$(mktemp)
-    time_state=$(mktemp)
-    printf '%s\n' '0' >"$poll_state"
-    printf '%s\n' '0' >"$time_state"
-    _make_terraform_stub "$stub_dir" "ok-populated"
-    _make_waiter_aws_stub "$stub_dir"
-    _make_waiter_time_stubs "$stub_dir"
+  Describe 'a FAILED rollout diagnostic'
+    Parameters
+      "ECS deployment circuit breaker: tasks failed to start." "ECS deployment circuit breaker: tasks failed to start."
+      "" "deployment rolloutState is FAILED"
+    End
 
-    When run env \
-      PATH="$stub_dir:$PATH" \
-      TERRAFORM_INIT_COMMAND="true" \
-      DEPLOY_METADATA_OUTPUT="crm_ecs_deploy_metadata" \
-      IMAGE_URIS_JSON='{"backend":"new-uri"}' \
-      REBUILT_SERVICE_IDS_JSON='["backend"]' \
-      ENV_OR_INFRA_CHANGED="true" \
-      SERVICE_GROUPS_JSON='{"backend":{"service_ids":["backend"]}}' \
-      SERVICES_STABLE_TIMEOUT_MINUTES="20" \
-      AWS_POLL_MODE="rollback-failed" \
-      AWS_POLL_STATE="$poll_state" \
-      AWS_TIME_MODE="advance" \
-      AWS_TIME_STATE="$time_state" \
-      GITHUB_OUTPUT="$gh_out" \
-      bash -c 'cd "'"$workdir"'" && bash "$SCRIPT_UNDER_TEST"'
+    It 'rejects a sole FAILED rollout with matching counts even with the default policy'
+      stub_dir=$(mktemp -d)
+      PATH="$stub_dir:$PATH"
+      workdir=$(mktemp -d)
+      gh_out=$(mktemp)
+      poll_state=$(mktemp)
+      time_state=$(mktemp)
+      printf '%s\n' '0' >"$poll_state"
+      printf '%s\n' '0' >"$time_state"
+      _make_terraform_stub "$stub_dir" "ok-populated"
+      _make_waiter_aws_stub "$stub_dir"
+      _make_waiter_time_stubs "$stub_dir"
 
-    The status should be failure
-    The output should include "ECS deployment circuit breaker: tasks failed to start."
-    The output should include "ECS service stability diagnostics"
-    The output should not include "is stable"
+      When run env \
+        PATH="$stub_dir:$PATH" \
+        TERRAFORM_INIT_COMMAND="true" \
+        DEPLOY_METADATA_OUTPUT="crm_ecs_deploy_metadata" \
+        IMAGE_URIS_JSON='{"backend":"new-uri"}' \
+        REBUILT_SERVICE_IDS_JSON='["backend"]' \
+        ENV_OR_INFRA_CHANGED="true" \
+        SERVICE_GROUPS_JSON='{"backend":{"service_ids":["backend"]}}' \
+        SERVICES_STABLE_TIMEOUT_MINUTES="20" \
+        AWS_POLL_MODE="rollback-failed" \
+        AWS_ROLLOUT_REASON="$1" \
+        AWS_POLL_STATE="$poll_state" \
+        AWS_TIME_MODE="advance" \
+        AWS_TIME_STATE="$time_state" \
+        GITHUB_OUTPUT="$gh_out" \
+        bash -c 'cd "'"$workdir"'" && bash "$SCRIPT_UNDER_TEST"'
+
+      The status should be failure
+      The output should include "$2"
+      The output should include "ECS service stability diagnostics"
+      The output should not include "is stable"
+    End
   End
 
   It 'fails when the service settled on the previous task definition after a rollback'

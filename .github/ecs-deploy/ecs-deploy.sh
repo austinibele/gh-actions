@@ -71,7 +71,9 @@ wait_for_service_stability() {
     rollback_reason="$(jq -r --arg target "$target_task_definition_arn" '
       [.services[]?.deployments[]?] as $deployments
       | ($deployments | map(select(.rolloutState == "FAILED")) | first) as $failed
-      | if $failed != null then ($failed.rolloutStateReason // "deployment rolloutState is FAILED")
+      | if $failed != null then
+          "deployment rolloutState is FAILED" +
+          (($failed.rolloutStateReason | select(type == "string" and length > 0) | ": " + .) // "")
         elif (($deployments | length) > 0 and all($deployments[]; .taskDefinition != $target))
           then "deployment for \($target) is gone; service rolled back to \($deployments[0].taskDefinition)"
         else empty end
