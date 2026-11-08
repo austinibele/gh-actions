@@ -11,13 +11,18 @@ SKIP_WHEN_METADATA_ABSENT="${SKIP_WHEN_METADATA_ABSENT:-false}"
 REPOSITORY_TAG="${REPOSITORY_TAG:-}"
 SERVICES_STABLE_TIMEOUT_MINUTES="${SERVICES_STABLE_TIMEOUT_MINUTES:-20}"
 SERVICES_STABLE_POLL_INTERVAL_SECONDS="${SERVICES_STABLE_POLL_INTERVAL_SECONDS:-15}"
+REQUIRE_COMPLETED_ROLLOUT="${REQUIRE_COMPLETED_ROLLOUT:-false}"
 
 if ! [[ "$SERVICES_STABLE_TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::SERVICES_STABLE_TIMEOUT_MINUTES must be a positive integer"
   exit 1
 fi
-if ! [[ "$SERVICES_STABLE_POLL_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
-  echo "::error::SERVICES_STABLE_POLL_INTERVAL_SECONDS must be a positive integer"
+if ! [[ "$SERVICES_STABLE_POLL_INTERVAL_SECONDS" =~ ^([1-9]|[1-5][0-9]|60)$ ]]; then
+  echo "::error::services-stable-poll-seconds must be an integer from 1 to 60"
+  exit 1
+fi
+if [[ "$REQUIRE_COMPLETED_ROLLOUT" != "true" && "$REQUIRE_COMPLETED_ROLLOUT" != "false" ]]; then
+  echo "::error::require-completed-rollout must be true or false"
   exit 1
 fi
 
@@ -62,21 +67,7 @@ wait_for_service_stability() {
       return "$describe_status"
     fi
 
-    # Stable means the ONLY remaining deployment is the one we just registered.
-    # After a circuit-breaker rollback the service also settles on a single
-    # deployment with running == desired, but on the previous task definition.
-    if jq -e --arg target "$target_task_definition_arn" '
-      (.failures | length) == 0 and
-      (.services | length) > 0 and
-      all(.services[];
-        (.deployments | length) == 1 and
-        .runningCount == .desiredCount and
-        .deployments[0].taskDefinition == $target)
-    ' <<<"$service_snapshot" >/dev/null; then
-      echo "ECS service ${service_name} is stable on ${target_task_definition_arn}"
-      return 0
-    fi
-
+    # A failed rollout can still report a single deployment and matching counts.
     rollback_reason="$(jq -r --arg target "$target_task_definition_arn" '
       [.services[]?.deployments[]?] as $deployments
       | ($deployments | map(select(.rolloutState == "FAILED")) | first) as $failed
@@ -89,6 +80,29 @@ wait_for_service_stability() {
       echo "::error::ECS deployment of ${service_name} failed: ${rollback_reason}"
       log_service_stability_diagnostics "$cluster_name" "$service_name"
       return 1
+    fi
+
+    # ECS can report matching task counts while the old targets are still draining.
+    if jq -e --arg target "$target_task_definition_arn" --argjson strict "$REQUIRE_COMPLETED_ROLLOUT" '
+      (.failures | length) == 0 and
+      (.services | length) > 0 and
+      all(.services[];
+        .deployments[0] as $deployment |
+        (.deployments | length) == 1 and
+        .runningCount == .desiredCount and
+        $deployment.taskDefinition == $target and
+        (if $strict then
+          $deployment.status == "PRIMARY" and
+          $deployment.rolloutState == "COMPLETED" and
+          (.desiredCount | type) == "number" and
+          .pendingCount == 0 and
+          $deployment.desiredCount == .desiredCount and
+          $deployment.runningCount == .desiredCount and
+          $deployment.pendingCount == 0
+        else true end))
+    ' <<<"$service_snapshot" >/dev/null; then
+      echo "ECS service ${service_name} is stable on ${target_task_definition_arn}"
+      return 0
     fi
 
     now_epoch="$(date +%s)"
