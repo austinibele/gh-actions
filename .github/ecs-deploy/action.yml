@@ -42,6 +42,10 @@ inputs:
     description: 'Seconds between ECS stability checks (integer from 1 to 60).'
     required: false
     default: '15'
+  finish-on-successful-deployment:
+    description: "Finish as soon as ECS reports the service deployment SUCCESSFUL (new tasks healthy, old tasks out of the load balancer and told to stop) instead of waiting for the old tasks to finish stopping. This verdict replaces the require-completed-rollout check (which waits for the old deployment to leave the service); that check still applies when the verdict is not yet visible. Fails on a stopped or rolled-back service deployment. Needs ecs:ListServiceDeployments on the service; if the call fails the step warns once and waits as it would without this option."
+    required: false
+    default: 'false'
 
 outputs:
   metadata_configured:
@@ -70,4 +74,5 @@ runs:
         SERVICES_STABLE_TIMEOUT_MINUTES: ${{ inputs.services-stable-timeout-minutes }}
         REQUIRE_COMPLETED_ROLLOUT: ${{ inputs.require-completed-rollout }}
         SERVICES_STABLE_POLL_INTERVAL_SECONDS: ${{ inputs.services-stable-poll-seconds }}
+        FINISH_ON_SUCCESSFUL_DEPLOYMENT: ${{ inputs.finish-on-successful-deployment }}
       run: bash "${{ github.action_path }}/ecs-deploy.sh"

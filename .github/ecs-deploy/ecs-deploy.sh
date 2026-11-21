@@ -12,6 +12,7 @@ REPOSITORY_TAG="${REPOSITORY_TAG:-}"
 SERVICES_STABLE_TIMEOUT_MINUTES="${SERVICES_STABLE_TIMEOUT_MINUTES:-20}"
 SERVICES_STABLE_POLL_INTERVAL_SECONDS="${SERVICES_STABLE_POLL_INTERVAL_SECONDS:-15}"
 REQUIRE_COMPLETED_ROLLOUT="${REQUIRE_COMPLETED_ROLLOUT:-false}"
+FINISH_ON_SUCCESSFUL_DEPLOYMENT="${FINISH_ON_SUCCESSFUL_DEPLOYMENT:-false}"
 
 if ! [[ "$SERVICES_STABLE_TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::SERVICES_STABLE_TIMEOUT_MINUTES must be a positive integer"
@@ -23,6 +24,10 @@ if ! [[ "$SERVICES_STABLE_POLL_INTERVAL_SECONDS" =~ ^([1-9]|[1-5][0-9]|60)$ ]]; 
 fi
 if [[ "$REQUIRE_COMPLETED_ROLLOUT" != "true" && "$REQUIRE_COMPLETED_ROLLOUT" != "false" ]]; then
   echo "::error::require-completed-rollout must be true or false"
+  exit 1
+fi
+if [[ "$FINISH_ON_SUCCESSFUL_DEPLOYMENT" != "true" && "$FINISH_ON_SUCCESSFUL_DEPLOYMENT" != "false" ]]; then
+  echo "::error::finish-on-successful-deployment must be true or false"
   exit 1
 fi
 
@@ -53,6 +58,7 @@ wait_for_service_stability() {
   local service_name="$2"
   local target_task_definition_arn="$3"
   local deadline_epoch now_epoch remaining_seconds sleep_seconds service_snapshot describe_status rollback_reason
+  local deployment_signal="$FINISH_ON_SUCCESSFUL_DEPLOYMENT" deployment_number service_deployments service_deployment deployment_status
 
   deadline_epoch="$(($(date +%s) + SERVICES_STABLE_TIMEOUT_MINUTES * 60))"
   echo "Waiting up to ${SERVICES_STABLE_TIMEOUT_MINUTES} minute(s) for ${service_name} to stabilize (polling every ${SERVICES_STABLE_POLL_INTERVAL_SECONDS} seconds)"
@@ -84,6 +90,49 @@ wait_for_service_stability() {
       return 1
     fi
 
+    # ECS's verdict on the deployment: SUCCESSFUL once the new tasks are healthy and the old ones are out of
+    # the load balancer and told to stop, about 90 s before rolloutState reads COMPLETED. UpdateService starts
+    # deployment ecs-svc/<n>, and its service deployment targets the service revision ARN ending in /<n>.
+    if [[ "$deployment_signal" == "true" ]]; then
+      deployment_number="$(jq -r --arg target "$target_task_definition_arn" '
+        [.services[0].deployments[]? | select(.status == "PRIMARY" and .taskDefinition == $target)]
+        | first | (.id // "") | ltrimstr("ecs-svc/")
+      ' <<<"$service_snapshot")"
+      if [[ -n "$deployment_number" ]]; then
+        if service_deployments="$(aws ecs list-service-deployments --cluster "$cluster_name" --service "$service_name" --output json)" &&
+          service_deployment="$(jq -c --arg number "$deployment_number" '
+            [.serviceDeployments[]? | select((.targetServiceRevisionArn // "") | endswith("/" + $number))] | first // empty
+          ' <<<"$service_deployments")"; then
+          deployment_status="$(jq -r '.status // empty' <<<"$service_deployment")"
+          case "$deployment_status" in
+            STOPPED | STOP_REQUESTED | ROLLBACK_*)
+              echo "::error::ECS deployment of ${service_name} failed: service deployment status is ${deployment_status}$(jq -r '(.statusReason // "") | select(length > 0) | ": " + .' <<<"$service_deployment")"
+              log_service_stability_diagnostics "$cluster_name" "$service_name"
+              return 1
+              ;;
+            SUCCESSFUL)
+              if jq -e --arg target "$target_task_definition_arn" '
+                .services[0] as $service
+                | ([$service.deployments[]? | select(.status == "PRIMARY")] | first) as $primary
+                | $primary != null and
+                  $primary.taskDefinition == $target and
+                  ($service.desiredCount | type) == "number" and
+                  $primary.desiredCount == $service.desiredCount and
+                  $primary.runningCount == $service.desiredCount and
+                  $primary.pendingCount == 0
+              ' <<<"$service_snapshot" >/dev/null; then
+                echo "ECS reports the deployment of ${service_name} to ${target_task_definition_arn} SUCCESSFUL (finished $(jq -r '.finishedAt // "at an unreported time"' <<<"$service_deployment")); the old tasks may still be stopping"
+                return 0
+              fi
+              ;;
+          esac
+        else
+          echo "::warning::Could not read the ECS service deployments of ${service_name} (see the output above); waiting for the rollout to complete instead"
+          deployment_signal="false"
+        fi
+      fi
+    fi
+
     # ECS can report matching task counts while the old targets are still draining.
     if jq -e --arg target "$target_task_definition_arn" --argjson strict "$REQUIRE_COMPLETED_ROLLOUT" '
       (.failures | length) == 0 and
@@ -103,6 +152,9 @@ wait_for_service_stability() {
           $deployment.pendingCount == 0
         else true end))
     ' <<<"$service_snapshot" >/dev/null; then
+      if [[ "$deployment_signal" == "true" ]]; then
+        echo "::notice::ECS had not reported the service deployment of ${service_name} SUCCESSFUL; finished on the rollout check"
+      fi
       echo "ECS service ${service_name} is stable on ${target_task_definition_arn}"
       return 0
     fi
