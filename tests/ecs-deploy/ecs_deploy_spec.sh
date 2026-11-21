@@ -86,6 +86,9 @@ _make_waiter_aws_stub() {
   cat >"${stub_dir}/aws" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ -n "${AWS_CALL_LOG:-}" ]]; then
+  printf '%s\n' "$1 $2" >>"$AWS_CALL_LOG"
+fi
 case "$1 $2" in
   "ecs describe-task-definition")
     cat <<'JSON'
@@ -98,11 +101,36 @@ JSON
   "ecs update-service")
     printf '%s\n' '{}'
     ;;
+  "ecs list-service-deployments")
+    revision='arn:aws:ecs:us-east-1:123:service-revision/crm-dev/crm-backend'
+    case "${AWS_LIST_MODE:-}" in
+      successful)
+        printf '%s\n' "{\"serviceDeployments\":[{\"status\":\"SUCCESSFUL\",\"targetServiceRevisionArn\":\"${revision}/222\",\"finishedAt\":\"2026-11-21T12:02:10Z\"},{\"status\":\"SUCCESSFUL\",\"targetServiceRevisionArn\":\"${revision}/111\"}]}"
+        ;;
+      earlier-successful)
+        printf '%s\n' "{\"serviceDeployments\":[{\"status\":\"IN_PROGRESS\",\"targetServiceRevisionArn\":\"${revision}/222\"},{\"status\":\"SUCCESSFUL\",\"targetServiceRevisionArn\":\"${revision}/111\"}]}"
+        ;;
+      rollback)
+        printf '%s\n' "{\"serviceDeployments\":[{\"status\":\"ROLLBACK_IN_PROGRESS\",\"statusReason\":\"circuit breaker\",\"targetServiceRevisionArn\":\"${revision}/222\"}]}"
+        ;;
+      denied)
+        echo "An error occurred (AccessDeniedException) when calling the ListServiceDeployments operation" >&2
+        exit 254
+        ;;
+    esac
+    ;;
   "ecs describe-services")
     poll_count="$(cat "$AWS_POLL_STATE")"
     poll_count="$((poll_count + 1))"
     printf '%s\n' "$poll_count" >"$AWS_POLL_STATE"
-    if [[ "$AWS_POLL_MODE" == "strict" ]]; then
+    if [[ "$AWS_POLL_MODE" == "superseding" ]]; then
+      # The new deployment is healthy while the old one is still listed; the rollout completes on poll 3.
+      if [[ "$poll_count" -ge 3 ]]; then
+        printf '%s\n' '{"failures":[],"services":[{"desiredCount":1,"runningCount":1,"pendingCount":0,"deployments":[{"id":"ecs-svc/222","status":"PRIMARY","rolloutState":"COMPLETED","desiredCount":1,"runningCount":1,"pendingCount":0,"taskDefinition":"arn:aws:ecs:us-east-1:123:task-definition/crm-backend:2"}]}]}'
+      else
+        printf '%s\n' '{"failures":[],"services":[{"desiredCount":1,"runningCount":2,"pendingCount":0,"deployments":[{"id":"ecs-svc/222","status":"PRIMARY","rolloutState":"IN_PROGRESS","desiredCount":1,"runningCount":1,"pendingCount":0,"taskDefinition":"arn:aws:ecs:us-east-1:123:task-definition/crm-backend:2"},{"id":"ecs-svc/111","status":"ACTIVE","rolloutState":"COMPLETED","desiredCount":0,"runningCount":1,"pendingCount":0,"taskDefinition":"arn:aws:ecs:us-east-1:123:task-definition/crm-backend:1"}],"events":[]}]}'
+      fi
+    elif [[ "$AWS_POLL_MODE" == "strict" ]]; then
       snapshot='{"failures":[],"services":[{"desiredCount":1,"runningCount":1,"pendingCount":0,"deployments":[{"status":"PRIMARY","rolloutState":"COMPLETED","desiredCount":1,"runningCount":1,"pendingCount":0,"taskDefinition":"arn:aws:ecs:us-east-1:123:task-definition/crm-backend:2"}]}]}'
       case "$poll_count" in
         1) jq '.services[0].deployments[0].rolloutState = "IN_PROGRESS"' <<<"$snapshot" ;;
@@ -678,5 +706,104 @@ EOF
     The output should include "service rolled back to arn:aws:ecs:us-east-1:123:task-definition/crm-backend:1"
     The output should include "ECS service stability diagnostics"
     The output should not include "is stable"
+  End
+
+  Describe 'finish-on-successful-deployment'
+    # $1: the option, $2: the list-service-deployments stub mode. Prints the status, polls and list calls.
+    _run_superseding_deploy() {
+      stub_dir=$(mktemp -d)
+      workdir=$(mktemp -d)
+      gh_out=$(mktemp)
+      poll_state=$(mktemp)
+      time_state=$(mktemp)
+      call_log=$(mktemp)
+      printf '%s\n' '0' >"$poll_state"
+      printf '%s\n' '0' >"$time_state"
+      _make_terraform_stub "$stub_dir" "ok-populated"
+      _make_waiter_aws_stub "$stub_dir"
+      _make_waiter_time_stubs "$stub_dir"
+      status=0
+      env \
+        PATH="$stub_dir:$PATH" \
+        TERRAFORM_INIT_COMMAND="true" \
+        DEPLOY_METADATA_OUTPUT="crm_ecs_deploy_metadata" \
+        IMAGE_URIS_JSON='{"backend":"new-uri"}' \
+        REBUILT_SERVICE_IDS_JSON='["backend"]' \
+        ENV_OR_INFRA_CHANGED="true" \
+        SERVICE_GROUPS_JSON='{"backend":{"service_ids":["backend"]}}' \
+        REQUIRE_COMPLETED_ROLLOUT="true" \
+        FINISH_ON_SUCCESSFUL_DEPLOYMENT="$1" \
+        AWS_POLL_MODE="superseding" \
+        AWS_LIST_MODE="$2" \
+        AWS_CALL_LOG="$call_log" \
+        AWS_POLL_STATE="$poll_state" \
+        AWS_TIME_MODE="advance" \
+        AWS_TIME_STATE="$time_state" \
+        GITHUB_OUTPUT="$gh_out" \
+        bash -c 'cd "$1" && bash "$SCRIPT_UNDER_TEST"' _ "$workdir" || status=$?
+      echo "exit=${status}"
+      echo "polls=$(cat "$poll_state")"
+      echo "list-calls=$(grep -c '^ecs list-service-deployments$' "$call_log" || true)"
+    }
+
+    It 'finishes on SUCCESSFUL while the old deployment is still listed and the rollout is IN_PROGRESS'
+      When call _run_superseding_deploy true successful
+      The output should include "exit=0"
+      The output should include "polls=1"
+      The output should include "SUCCESSFUL (finished 2026-11-21T12:02:10Z)"
+      The output should not include "::notice::"
+    End
+
+    It 'ignores a SUCCESSFUL service deployment of the previous revision'
+      When call _run_superseding_deploy true earlier-successful
+      The output should include "exit=0"
+      The output should include "polls=3"
+      The output should include "list-calls=3"
+      The output should include "::notice::ECS had not reported the service deployment of crm-backend SUCCESSFUL"
+      The output should include "is stable"
+    End
+
+    It 'fails on a rolled-back service deployment'
+      When call _run_superseding_deploy true rollback
+      The output should include "exit=1"
+      The output should include "list-calls=1"
+      The output should include "service deployment status is ROLLBACK_IN_PROGRESS: circuit breaker"
+      The output should include "ECS service stability diagnostics"
+      The output should not include "is stable"
+    End
+
+    It 'warns once when the list call is denied, then finishes on the completed rollout'
+      When call _run_superseding_deploy true denied
+      The output should include "exit=0"
+      The output should include "polls=3"
+      The output should include "list-calls=1"
+      The output should include "::warning::Cannot list the ECS service deployments of crm-backend"
+      The output should not include "::notice::"
+      The output should include "is stable"
+      The stderr should include "AccessDeniedException"
+    End
+
+    It 'makes no list call when the option is off'
+      When call _run_superseding_deploy false successful
+      The output should include "exit=0"
+      The output should include "polls=3"
+      The output should include "list-calls=0"
+      The output should not include "SUCCESSFUL"
+    End
+
+    It 'rejects a value other than true or false before initializing Terraform'
+      When run env \
+        TERRAFORM_INIT_COMMAND="exit 42" \
+        DEPLOY_METADATA_OUTPUT="crm_ecs_deploy_metadata" \
+        IMAGE_URIS_JSON='{}' \
+        REBUILT_SERVICE_IDS_JSON='[]' \
+        ENV_OR_INFRA_CHANGED="false" \
+        SERVICE_GROUPS_JSON='{}' \
+        FINISH_ON_SUCCESSFUL_DEPLOYMENT="yes" \
+        bash "$SCRIPT_UNDER_TEST"
+
+      The status should equal 1
+      The output should include "finish-on-successful-deployment must be true or false"
+    End
   End
 End
