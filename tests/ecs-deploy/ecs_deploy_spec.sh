@@ -117,6 +117,9 @@ JSON
         echo "An error occurred (AccessDeniedException) when calling the ListServiceDeployments operation" >&2
         exit 254
         ;;
+      garbled)
+        printf '%s\n' 'not json'
+        ;;
     esac
     ;;
   "ecs describe-services")
@@ -777,10 +780,20 @@ EOF
       The output should include "exit=0"
       The output should include "polls=3"
       The output should include "list-calls=1"
-      The output should include "::warning::Cannot list the ECS service deployments of crm-backend"
+      The output should include "::warning::Could not read the ECS service deployments of crm-backend"
       The output should not include "::notice::"
       The output should include "is stable"
       The stderr should include "AccessDeniedException"
+    End
+
+    It 'treats an unreadable list response like a failed call'
+      When call _run_superseding_deploy true garbled
+      The output should include "exit=0"
+      The output should include "polls=3"
+      The output should include "list-calls=1"
+      The output should include "::warning::Could not read the ECS service deployments of crm-backend"
+      The output should include "is stable"
+      The stderr should include "parse error"
     End
 
     It 'makes no list call when the option is off'

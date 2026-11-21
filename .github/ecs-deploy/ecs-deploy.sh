@@ -99,10 +99,10 @@ wait_for_service_stability() {
         | first | (.id // "") | ltrimstr("ecs-svc/")
       ' <<<"$service_snapshot")"
       if [[ -n "$deployment_number" ]]; then
-        if service_deployments="$(aws ecs list-service-deployments --cluster "$cluster_name" --service "$service_name" --output json)"; then
+        if service_deployments="$(aws ecs list-service-deployments --cluster "$cluster_name" --service "$service_name" --output json)" &&
           service_deployment="$(jq -c --arg number "$deployment_number" '
             [.serviceDeployments[]? | select((.targetServiceRevisionArn // "") | endswith("/" + $number))] | first // empty
-          ' <<<"$service_deployments")"
+          ' <<<"$service_deployments")"; then
           deployment_status="$(jq -r '.status // empty' <<<"$service_deployment")"
           case "$deployment_status" in
             STOPPED | STOP_REQUESTED | ROLLBACK_*)
@@ -127,7 +127,7 @@ wait_for_service_stability() {
               ;;
           esac
         else
-          echo "::warning::Cannot list the ECS service deployments of ${service_name}; waiting for the rollout to complete instead"
+          echo "::warning::Could not read the ECS service deployments of ${service_name} (see the output above); waiting for the rollout to complete instead"
           deployment_signal="false"
         fi
       fi

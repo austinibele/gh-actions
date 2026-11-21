@@ -43,7 +43,7 @@ inputs:
     required: false
     default: '15'
   finish-on-successful-deployment:
-    description: "Finish as soon as ECS reports the service deployment SUCCESSFUL (new tasks healthy, old tasks out of the load balancer and told to stop) instead of waiting for the old tasks to finish stopping. Fails on a stopped or rolled-back service deployment. Needs ecs:ListServiceDeployments on the service; without it the step warns once and waits as it would without this option."
+    description: "Finish as soon as ECS reports the service deployment SUCCESSFUL (new tasks healthy, old tasks out of the load balancer and told to stop) instead of waiting for the old tasks to finish stopping. This verdict replaces the require-completed-rollout check (which waits for the old deployment to leave the service); that check still applies when the verdict is not yet visible. Fails on a stopped or rolled-back service deployment. Needs ecs:ListServiceDeployments on the service; if the call fails the step warns once and waits as it would without this option."
     required: false
     default: 'false'
 
