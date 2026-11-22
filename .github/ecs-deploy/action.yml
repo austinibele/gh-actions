@@ -54,6 +54,9 @@ outputs:
   deploy_skipped:
     description: 'true when deployment was skipped because the stack has not been applied yet.'
     value: ${{ steps.deploy.outputs.deploy_skipped }}
+  service_updates_json:
+    description: 'Compact JSON array with one entry per ECS service this run updated: {cluster, service, previous_task_definition_arn, deployed_task_definition_arn}. previous_task_definition_arn is the task definition of the PRIMARY deployment just before the update, or an empty string when it could not be read (needs ecs:DescribeServices; a first deploy has none). [] when the deploy was skipped or no service was updated. Also written when the step fails after an update, for example while waiting for stability.'
+    value: ${{ steps.deploy.outputs.service_updates_json }}
 
 runs:
   using: composite
