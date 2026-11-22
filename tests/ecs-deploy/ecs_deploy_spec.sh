@@ -35,6 +35,30 @@ if [[ "\$1" == "output" && "\$2" == "-json" ]]; then
 JSON
       exit 0
       ;;
+    ok-two-services)
+      cat <<'JSON'
+{
+  "crm_ecs_deploy_metadata": {
+    "value": {
+      "cluster_name": "crm-dev",
+      "services": {
+        "backend": {
+          "service_name": "crm-backend",
+          "task_definition_arn": "arn:aws:ecs:us-east-1:123:task-definition/crm-backend:1",
+          "container_names": {"backend": "backend"}
+        },
+        "worker": {
+          "service_name": "crm-worker",
+          "task_definition_arn": "arn:aws:ecs:us-east-1:123:task-definition/crm-worker:1",
+          "container_names": {"worker": "worker"}
+        }
+      }
+    }
+  }
+}
+JSON
+      exit 0
+      ;;
     ok-null-meta)
       cat <<'JSON'
 {
@@ -123,6 +147,11 @@ JSON
     esac
     ;;
   "ecs describe-services")
+    if [[ "$*" == *"status=='PRIMARY'"* ]]; then
+      # The read of the previous task definition before update-service; not a stability poll.
+      printf '%s\n' '["arn:aws:ecs:us-east-1:123:task-definition/crm-backend:1"]'
+      exit 0
+    fi
     poll_count="$(cat "$AWS_POLL_STATE")"
     poll_count="$((poll_count + 1))"
     printf '%s\n' "$poll_count" >"$AWS_POLL_STATE"
@@ -157,6 +186,58 @@ JSON
     else
       printf '%s\n' '{"failures":[],"services":[{"desiredCount":1,"runningCount":0,"pendingCount":1,"deployments":[{"status":"PRIMARY","taskDefinition":"arn:aws:ecs:us-east-1:123:task-definition/crm-backend:2"},{"status":"ACTIVE","taskDefinition":"arn:aws:ecs:us-east-1:123:task-definition/crm-backend:1"}],"events":[{"message":"service-events"}]}]}'
     fi
+    ;;
+esac
+EOF
+  chmod +x "${stub_dir}/aws"
+}
+
+# Stable on the first poll. Each service group <key> registers crm-<key>:2 and ran crm-<key>:1 before.
+# AWS_PREVIOUS_MODE: primary (default), denied, no-primary.
+_make_service_updates_aws_stub() {
+  local stub_dir="$1"
+
+  cat >"${stub_dir}/aws" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+arn_prefix='arn:aws:ecs:us-east-1:123:task-definition'
+service_name=""
+input_file=""
+previous_args=(placeholder "$@")
+for ((i = 1; i < ${#previous_args[@]}; i++)); do
+  case "${previous_args[$i]}" in
+    --services | --service) service_name="${previous_args[$((i + 1))]}" ;;
+    --cli-input-json) input_file="${previous_args[$((i + 1))]}" ;;
+  esac
+done
+case "$1 $2" in
+  "ecs describe-task-definition")
+    printf '%s\n' '{"family":"crm","containerDefinitions":[{"name":"backend","image":"old-uri"},{"name":"worker","image":"old-uri"}]}'
+    ;;
+  "ecs register-task-definition")
+    service_key="${input_file#file://task-definition-}"
+    printf '%s\n' "${arn_prefix}/crm-${service_key%.json}:2"
+    ;;
+  "ecs update-service")
+    printf '%s\n' '{}'
+    ;;
+  "ecs describe-services")
+    if [[ "$*" == *"status=='PRIMARY'"* ]]; then
+      case "${AWS_PREVIOUS_MODE:-primary}" in
+        primary) printf '%s\n' "[\"${arn_prefix}/${service_name}:1\"]" ;;
+        no-primary) printf '%s\n' '[]' ;;
+        denied)
+          echo "An error occurred (AccessDeniedException) when calling the DescribeServices operation" >&2
+          exit 254
+          ;;
+      esac
+      exit 0
+    fi
+    printf '%s\n' "{\"failures\":[],\"services\":[{\"desiredCount\":1,\"runningCount\":1,\"pendingCount\":0,\"deployments\":[{\"status\":\"PRIMARY\",\"taskDefinition\":\"${arn_prefix}/${service_name}:2\"}]}]}"
+    ;;
+  *)
+    echo "unexpected aws args: $*" >&2
+    exit 1
     ;;
 esac
 EOF
@@ -817,6 +898,108 @@ EOF
 
       The status should equal 1
       The output should include "finish-on-successful-deployment must be true or false"
+    End
+  End
+
+  Describe 'service_updates_json output'
+    # $1: terraform stub mode, $2: AWS_PREVIOUS_MODE, $3: SERVICE_GROUPS_JSON, $4: ENV_OR_INFRA_CHANGED.
+    # Prints the exit status and the service_updates_json output line.
+    _run_recorded_deploy() {
+      stub_dir=$(mktemp -d)
+      workdir=$(mktemp -d)
+      gh_out=$(mktemp)
+      _make_terraform_stub "$stub_dir" "$1"
+      _make_service_updates_aws_stub "$stub_dir"
+      status=0
+      env \
+        PATH="$stub_dir:$PATH" \
+        TERRAFORM_INIT_COMMAND="true" \
+        DEPLOY_METADATA_OUTPUT="crm_ecs_deploy_metadata" \
+        IMAGE_URIS_JSON='{"backend":"new-uri","worker":"new-uri"}' \
+        REBUILT_SERVICE_IDS_JSON='["backend","worker"]' \
+        ENV_OR_INFRA_CHANGED="$4" \
+        SERVICE_GROUPS_JSON="$3" \
+        AWS_PREVIOUS_MODE="$2" \
+        GITHUB_OUTPUT="$gh_out" \
+        bash -c 'cd "$1" && bash "$SCRIPT_UNDER_TEST"' _ "$workdir" || status=$?
+      echo "exit=${status}"
+      grep '^service_updates_json=' "$gh_out" || true
+    }
+
+    It 'records the previous and deployed task definitions of an updated service'
+      When call _run_recorded_deploy ok-populated primary '{"backend":{"service_ids":["backend"]}}' true
+      The output should include "exit=0"
+      The output should include 'service_updates_json=[{"cluster":"crm-dev","service":"crm-backend","previous_task_definition_arn":"arn:aws:ecs:us-east-1:123:task-definition/crm-backend:1","deployed_task_definition_arn":"arn:aws:ecs:us-east-1:123:task-definition/crm-backend:2"}]'
+      The output should include "Previous task definition of crm-backend: arn:aws:ecs:us-east-1:123:task-definition/crm-backend:1"
+    End
+
+    It 'records one entry per updated service when the invocation updates two'
+      When call _run_recorded_deploy ok-two-services primary '{"backend":{"service_ids":["backend"]},"worker":{"service_ids":["worker"]}}' true
+      The output should include "exit=0"
+      The output should include 'service_updates_json=[{"cluster":"crm-dev","service":"crm-backend","previous_task_definition_arn":"arn:aws:ecs:us-east-1:123:task-definition/crm-backend:1","deployed_task_definition_arn":"arn:aws:ecs:us-east-1:123:task-definition/crm-backend:2"},{"cluster":"crm-dev","service":"crm-worker","previous_task_definition_arn":"arn:aws:ecs:us-east-1:123:task-definition/crm-worker:1","deployed_task_definition_arn":"arn:aws:ecs:us-east-1:123:task-definition/crm-worker:2"}]'
+    End
+
+    It 'writes an empty list when no service group needed an update'
+      When call _run_recorded_deploy ok-populated primary '{"backend":{"service_ids":["other"]}}' false
+      The output should include "exit=0"
+      The output should include "Skipping backend; no rebuilt images and no env/infra change"
+      The output should include 'service_updates_json=[]'
+    End
+
+    It 'writes an empty list when the stack has not been applied'
+      When call _run_recorded_deploy ok-empty primary '{"backend":{"service_ids":["backend"]}}' true
+      The output should include "exit=0"
+      The output should include 'service_updates_json=[]'
+    End
+
+    It 'records an empty previous task definition and still deploys when the read is denied'
+      When call _run_recorded_deploy ok-populated denied '{"backend":{"service_ids":["backend"]}}' true
+      The output should include "exit=0"
+      The output should include "::warning::Could not read the current task definition of crm-backend"
+      The output should include 'service_updates_json=[{"cluster":"crm-dev","service":"crm-backend","previous_task_definition_arn":"","deployed_task_definition_arn":"arn:aws:ecs:us-east-1:123:task-definition/crm-backend:2"}]'
+      The output should include "is stable"
+      The stderr should include "AccessDeniedException"
+    End
+
+    It 'records an empty previous task definition when the service has no PRIMARY deployment'
+      When call _run_recorded_deploy ok-populated no-primary '{"backend":{"service_ids":["backend"]}}' true
+      The output should include "exit=0"
+      The output should include "::warning::crm-backend has no PRIMARY deployment"
+      The output should include '"previous_task_definition_arn":""'
+      The output should include "is stable"
+    End
+
+    It 'still reports the updated service when the stability wait fails'
+      stub_dir=$(mktemp -d)
+      PATH="$stub_dir:$PATH"
+      workdir=$(mktemp -d)
+      gh_out=$(mktemp)
+      poll_state=$(mktemp)
+      time_state=$(mktemp)
+      printf '%s\n' '0' >"$poll_state"
+      printf '%s\n' '0' >"$time_state"
+      _make_terraform_stub "$stub_dir" "ok-populated"
+      _make_waiter_aws_stub "$stub_dir"
+      _make_waiter_time_stubs "$stub_dir"
+
+      When run env \
+        PATH="$stub_dir:$PATH" \
+        TERRAFORM_INIT_COMMAND="true" \
+        DEPLOY_METADATA_OUTPUT="crm_ecs_deploy_metadata" \
+        IMAGE_URIS_JSON='{"backend":"new-uri"}' \
+        REBUILT_SERVICE_IDS_JSON='["backend"]' \
+        ENV_OR_INFRA_CHANGED="true" \
+        SERVICE_GROUPS_JSON='{"backend":{"service_ids":["backend"]}}' \
+        AWS_POLL_MODE="rollback-settled" \
+        AWS_POLL_STATE="$poll_state" \
+        AWS_TIME_MODE="advance" \
+        AWS_TIME_STATE="$time_state" \
+        GITHUB_OUTPUT="$gh_out" \
+        bash -c 'cd "$1"; bash "$SCRIPT_UNDER_TEST"; status=$?; grep "^service_updates_json=" "$GITHUB_OUTPUT"; exit "$status"' _ "$workdir"
+
+      The status should be failure
+      The output should include "service rolled back"
+      The output should include '"previous_task_definition_arn":"arn:aws:ecs:us-east-1:123:task-definition/crm-backend:1","deployed_task_definition_arn":"arn:aws:ecs:us-east-1:123:task-definition/crm-backend:2"'
     End
   End
 End

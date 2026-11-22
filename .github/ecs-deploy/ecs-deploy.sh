@@ -40,6 +40,40 @@ write_deploy_outputs() {
   } >> "$GITHUB_OUTPUT"
 }
 
+# One entry per ECS service this run updated, for a caller that may need to put a service back on its previous
+# task definition. Written on exit, so a step that fails while waiting still reports the services it updated.
+service_updates_json='[]'
+
+write_service_updates_output() {
+  echo "service_updates_json=$(jq -c . <<<"$service_updates_json")" >> "$GITHUB_OUTPUT"
+}
+
+# Sets previous_task_definition_arn to the task definition of the service's PRIMARY deployment, or to an empty
+# string when it cannot be read (a failed call, or a service with no PRIMARY deployment yet). Never fails.
+read_previous_task_definition_arn() {
+  local cluster_name="$1"
+  local service_name="$2"
+  local primary_task_definitions
+
+  previous_task_definition_arn=""
+  if ! primary_task_definitions="$(aws ecs describe-services \
+    --cluster "$cluster_name" \
+    --services "$service_name" \
+    --query "services[0].deployments[?status=='PRIMARY'].taskDefinition" \
+    --output json)"; then
+    echo "::warning::Could not read the current task definition of ${service_name} (see the output above); recording no previous task definition"
+    return 0
+  fi
+  if ! previous_task_definition_arn="$(jq -r 'if type == "array" then (.[0] // "") else "" end' <<<"$primary_task_definitions")"; then
+    previous_task_definition_arn=""
+  fi
+  if [[ -z "$previous_task_definition_arn" ]]; then
+    echo "::warning::${service_name} has no PRIMARY deployment to read its current task definition from; recording no previous task definition"
+  else
+    echo "Previous task definition of ${service_name}: ${previous_task_definition_arn}"
+  fi
+}
+
 log_service_stability_diagnostics() {
   local cluster_name="$1"
   local service_name="$2"
@@ -175,6 +209,8 @@ wait_for_service_stability() {
   done
 }
 
+trap write_service_updates_output EXIT
+
 bash -c "$TERRAFORM_INIT_COMMAND"
 terraform output -json > tf-output.json
 
@@ -278,8 +314,16 @@ deploy_service_group() {
     register_task_definition_args+=(--tags "key=Repository,value=$REPOSITORY_TAG")
   fi
   new_task_definition_arn="$(aws "${register_task_definition_args[@]}")"
+  read_previous_task_definition_arn "$cluster_name" "$service_name"
   echo "Deploying $service_key via $service_name -> $new_task_definition_arn"
   aws ecs update-service --cluster "$cluster_name" --service "$service_name" --task-definition "$new_task_definition_arn"
+  service_updates_json="$(jq -c \
+    --arg cluster "$cluster_name" \
+    --arg service "$service_name" \
+    --arg previous "$previous_task_definition_arn" \
+    --arg deployed "$new_task_definition_arn" \
+    '. + [{cluster: $cluster, service: $service, previous_task_definition_arn: $previous, deployed_task_definition_arn: $deployed}]' \
+    <<<"$service_updates_json")"
   wait_for_service_stability "$cluster_name" "$service_name" "$new_task_definition_arn"
 }
 
